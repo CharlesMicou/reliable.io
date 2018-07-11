@@ -399,14 +399,14 @@ void reliable_write_bytes( uint8_t ** p, uint8_t * byte_array, int num_bytes )
     }
 }
 
-uint8_t reliable_read_uint8( uint8_t ** p )
+uint8_t reliable_read_uint8( RELIABLE_CONST uint8_t ** p )
 {
     uint8_t value = **p;
     ++(*p);
     return value;
 }
 
-uint16_t reliable_read_uint16( uint8_t ** p )
+uint16_t reliable_read_uint16( RELIABLE_CONST uint8_t ** p )
 {
     uint16_t value;
     value = (*p)[0];
@@ -415,7 +415,7 @@ uint16_t reliable_read_uint16( uint8_t ** p )
     return value;
 }
 
-uint32_t reliable_read_uint32( uint8_t ** p )
+uint32_t reliable_read_uint32( RELIABLE_CONST uint8_t ** p )
 {
     uint32_t value;
     value  = (*p)[0];
@@ -426,7 +426,7 @@ uint32_t reliable_read_uint32( uint8_t ** p )
     return value;
 }
 
-uint64_t reliable_read_uint64( uint8_t ** p )
+uint64_t reliable_read_uint64( RELIABLE_CONST uint8_t ** p )
 {
     uint64_t value;
     value  = (*p)[0];
@@ -441,7 +441,7 @@ uint64_t reliable_read_uint64( uint8_t ** p )
     return value;
 }
 
-void reliable_read_bytes( uint8_t ** p, uint8_t * byte_array, int num_bytes )
+void reliable_read_bytes( RELIABLE_CONST uint8_t ** p, uint8_t * byte_array, int num_bytes )
 {
     int i;
     for ( i = 0; i < num_bytes; ++i )
@@ -464,6 +464,8 @@ struct reliable_fragment_reassembly_data_t
     int packet_header_bytes;
     uint8_t fragment_received[256];
 };
+
+
 
 void reliable_fragment_reassembly_data_cleanup( void * data, void * allocator_context, void (*free_function)(void*,void*) )
 
@@ -540,7 +542,7 @@ void reliable_default_config( struct reliable_config_t * config )
     config->packet_header_size = 28;        // note: UDP over IPv4 = 20 + 8 bytes, UDP over IPv6 = 40 + 8 bytes
 }
 
-struct reliable_endpoint_t * reliable_endpoint_create( struct reliable_config_t * config, double time )
+struct reliable_endpoint_t * reliable_endpoint_create( RELIABLE_CONST struct reliable_config_t * config, double time )
 {
     reliable_assert( config );
     reliable_assert( config->max_packet_size > 0 );
@@ -634,7 +636,7 @@ void reliable_endpoint_destroy( struct reliable_endpoint_t * endpoint )
     endpoint->free_function( endpoint->allocator_context, endpoint );
 }
 
-uint16_t reliable_endpoint_next_packet_sequence( struct reliable_endpoint_t * endpoint )
+uint16_t reliable_endpoint_next_packet_sequence( RELIABLE_CONST struct reliable_endpoint_t * endpoint )
 {
     reliable_assert( endpoint );
     return endpoint->sequence;
@@ -710,7 +712,7 @@ int reliable_write_packet_header( uint8_t * packet_data, uint16_t sequence, uint
     return (int) ( p - packet_data );
 }
 
-void reliable_endpoint_send_packet( struct reliable_endpoint_t * endpoint, uint8_t * packet_data, int packet_bytes )
+void reliable_endpoint_send_packet( struct reliable_endpoint_t * endpoint, RELIABLE_CONST uint8_t * packet_data, int packet_bytes )
 {
     reliable_assert( endpoint );
     reliable_assert( packet_data );
@@ -777,9 +779,9 @@ void reliable_endpoint_send_packet( struct reliable_endpoint_t * endpoint, uint8
 
         uint8_t * fragment_packet_data = (uint8_t*) endpoint->allocate_function( endpoint->allocator_context, fragment_buffer_size );
 
-        uint8_t * q = packet_data;
+        RELIABLE_CONST uint8_t * q = packet_data;
 
-        uint8_t * end = q + packet_bytes;
+        RELIABLE_CONST uint8_t * end = q + packet_bytes;
 
         int fragment_id;
         for ( fragment_id = 0; fragment_id < num_fragments; ++fragment_id )
@@ -821,7 +823,7 @@ void reliable_endpoint_send_packet( struct reliable_endpoint_t * endpoint, uint8
     endpoint->counters[RELIABLE_ENDPOINT_COUNTER_NUM_PACKETS_SENT]++;
 }
 
-int reliable_read_packet_header( RELIABLE_CONST char * name, uint8_t * packet_data, int packet_bytes, uint16_t * sequence, uint16_t * ack, uint32_t * ack_bits )
+int reliable_read_packet_header( RELIABLE_CONST char * name, RELIABLE_CONST uint8_t * packet_data, int packet_bytes, uint16_t * sequence, uint16_t * ack, uint32_t * ack_bits )
 {
     if ( packet_bytes < 3 )
     {
@@ -829,7 +831,7 @@ int reliable_read_packet_header( RELIABLE_CONST char * name, uint8_t * packet_da
         return -1;
     }
 
-    uint8_t * p = packet_data;
+    RELIABLE_CONST uint8_t * p = packet_data;
 
     uint8_t prefix_byte = reliable_read_uint8( &p );
 
@@ -906,7 +908,7 @@ int reliable_read_packet_header( RELIABLE_CONST char * name, uint8_t * packet_da
 }
 
 int reliable_read_fragment_header( char * name, 
-                                   uint8_t * packet_data, 
+                                   RELIABLE_CONST uint8_t * packet_data, 
                                    int packet_bytes, 
                                    int max_fragments, 
                                    int fragment_size, 
@@ -923,7 +925,7 @@ int reliable_read_fragment_header( char * name,
         return -1;
     }
 
-    uint8_t * p = packet_data;
+    RELIABLE_CONST uint8_t * p = packet_data;
 
     uint8_t prefix_byte =reliable_read_uint8( &p );
     if ( prefix_byte != 1 )
@@ -1003,7 +1005,7 @@ void reliable_store_fragment_data( struct reliable_fragment_reassembly_data_t * 
                                    uint32_t ack_bits, 
                                    int fragment_id, 
                                    int fragment_size, 
-                                   uint8_t * fragment_data, 
+                                   RELIABLE_CONST uint8_t * fragment_data, 
                                    int fragment_bytes )
 {
     if ( fragment_id == 0 )
@@ -1030,7 +1032,7 @@ void reliable_store_fragment_data( struct reliable_fragment_reassembly_data_t * 
     memcpy( reassembly_data->packet_data + RELIABLE_MAX_PACKET_HEADER_BYTES + fragment_id * fragment_size, fragment_data, fragment_bytes );
 }
 
-void reliable_endpoint_receive_packet( struct reliable_endpoint_t * endpoint, uint8_t * packet_data, int packet_bytes )
+void reliable_endpoint_receive_packet( struct reliable_endpoint_t * endpoint, RELIABLE_CONST uint8_t * packet_data, int packet_bytes )
 {
     reliable_assert( endpoint );
     reliable_assert( packet_data );
@@ -1236,7 +1238,7 @@ void reliable_endpoint_free_packet( struct reliable_endpoint_t * endpoint, void 
     endpoint->free_function( endpoint->allocator_context, packet );
 }
 
-uint16_t * reliable_endpoint_get_acks( struct reliable_endpoint_t * endpoint, int * num_acks )
+uint16_t * reliable_endpoint_get_acks( RELIABLE_CONST struct reliable_endpoint_t * endpoint, int * num_acks )
 {
     reliable_assert( endpoint );
     reliable_assert( num_acks );
@@ -1434,19 +1436,19 @@ void reliable_endpoint_update( struct reliable_endpoint_t * endpoint, double tim
     }
 }
 
-float reliable_endpoint_rtt( struct reliable_endpoint_t * endpoint )
+float reliable_endpoint_rtt( RELIABLE_CONST struct reliable_endpoint_t * endpoint )
 {
     reliable_assert( endpoint );
     return endpoint->rtt;
 }
 
-float reliable_endpoint_packet_loss( struct reliable_endpoint_t * endpoint )
+float reliable_endpoint_packet_loss( RELIABLE_CONST struct reliable_endpoint_t * endpoint )
 {
     reliable_assert( endpoint );
     return endpoint->packet_loss;
 }
 
-void reliable_endpoint_bandwidth( struct reliable_endpoint_t * endpoint, float * sent_bandwidth_kbps, float * received_bandwidth_kbps, float * acked_bandwidth_kbps )
+void reliable_endpoint_bandwidth( RELIABLE_CONST struct reliable_endpoint_t * endpoint, float * sent_bandwidth_kbps, float * received_bandwidth_kbps, float * acked_bandwidth_kbps )
 {
     reliable_assert( endpoint );
     reliable_assert( sent_bandwidth_kbps );
@@ -1457,7 +1459,7 @@ void reliable_endpoint_bandwidth( struct reliable_endpoint_t * endpoint, float *
     *acked_bandwidth_kbps = endpoint->acked_bandwidth_kbps;
 }
 
-RELIABLE_CONST uint64_t * reliable_endpoint_counters( struct reliable_endpoint_t * endpoint )
+RELIABLE_CONST uint64_t * reliable_endpoint_counters( RELIABLE_CONST struct reliable_endpoint_t * endpoint )
 {
     reliable_assert( endpoint );
     return endpoint->counters;
@@ -1738,7 +1740,7 @@ static void test_transmit_packet_function( void * _context, int index, uint16_t 
     }
 }
 
-static int test_process_packet_function( void * _context, int index, uint16_t sequence, uint8_t * packet_data, int packet_bytes )
+static int test_process_packet_function( void * _context, int index, uint16_t sequence, RELIABLE_CONST uint8_t * packet_data, int packet_bytes )
 {
     struct test_context_t * context = (struct test_context_t*) _context;
 
@@ -1943,7 +1945,7 @@ static void validate_packet_data( uint8_t * packet_data, int packet_bytes )
     }
 }
 
-static int test_process_packet_function_validate( void * context, int index, uint16_t sequence, uint8_t * packet_data, int packet_bytes )
+static int test_process_packet_function_validate( void * context, int index, uint16_t sequence, RELIABLE_CONST uint8_t * packet_data, int packet_bytes )
 {
     reliable_assert( packet_data );
     reliable_assert( packet_bytes > 0 );

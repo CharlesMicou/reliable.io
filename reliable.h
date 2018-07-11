@@ -96,8 +96,8 @@ struct reliable_config_t
     float packet_loss_smoothing_factor;
     float bandwidth_smoothing_factor;
     int packet_header_size;
-    void (*transmit_packet_function)(void*,int,uint16_t,uint8_t*,int);
-    int (*process_packet_function)(void*,int,uint16_t,uint8_t*,int);
+    void (*transmit_packet_function)(void*,int,uint16_t,RELIABLE_CONST uint8_t*,int);
+    int (*process_packet_function)(void*,int,uint16_t,RELIABLE_CONST uint8_t*,int);
     void * allocator_context;
     void * (*allocate_function)(void*,uint64_t);
     void (*free_function)(void*,void*);
@@ -105,17 +105,17 @@ struct reliable_config_t
 
 void reliable_default_config( struct reliable_config_t * config );
 
-struct reliable_endpoint_t * reliable_endpoint_create( struct reliable_config_t * config, double time );
+struct reliable_endpoint_t * reliable_endpoint_create( RELIABLE_CONST struct reliable_config_t * config, double time );
 
-uint16_t reliable_endpoint_next_packet_sequence( struct reliable_endpoint_t * endpoint );
+uint16_t reliable_endpoint_next_packet_sequence( RELIABLE_CONST struct reliable_endpoint_t * endpoint );
 
-void reliable_endpoint_send_packet( struct reliable_endpoint_t * endpoint, uint8_t * packet_data, int packet_bytes );
+void reliable_endpoint_send_packet( struct reliable_endpoint_t * endpoint, RELIABLE_CONST uint8_t * packet_data, int packet_bytes );
 
-void reliable_endpoint_receive_packet( struct reliable_endpoint_t * endpoint, uint8_t * packet_data, int packet_bytes );
+void reliable_endpoint_receive_packet( struct reliable_endpoint_t * endpoint, RELIABLE_CONST uint8_t * packet_data, int packet_bytes );
 
 void reliable_endpoint_free_packet( struct reliable_endpoint_t * endpoint, void * packet );
 
-uint16_t * reliable_endpoint_get_acks( struct reliable_endpoint_t * endpoint, int * num_acks );
+uint16_t * reliable_endpoint_get_acks( RELIABLE_CONST struct reliable_endpoint_t * endpoint, int * num_acks );
 
 void reliable_endpoint_clear_acks( struct reliable_endpoint_t * endpoint );
 
@@ -123,13 +123,13 @@ void reliable_endpoint_reset( struct reliable_endpoint_t * endpoint );
 
 void reliable_endpoint_update( struct reliable_endpoint_t * endpoint, double time );
 
-float reliable_endpoint_rtt( struct reliable_endpoint_t * endpoint );
+float reliable_endpoint_rtt( RELIABLE_CONST struct reliable_endpoint_t * endpoint );
 
-float reliable_endpoint_packet_loss( struct reliable_endpoint_t * endpoint );
+float reliable_endpoint_packet_loss( RELIABLE_CONST struct reliable_endpoint_t * endpoint );
 
-void reliable_endpoint_bandwidth( struct reliable_endpoint_t * endpoint, float * sent_bandwidth_kbps, float * received_bandwidth_kbps, float * acked_bandwidth_kpbs );
+void reliable_endpoint_bandwidth( RELIABLE_CONST struct reliable_endpoint_t * endpoint, float * sent_bandwidth_kbps, float * received_bandwidth_kbps, float * acked_bandwidth_kpbs );
 
-RELIABLE_CONST uint64_t * reliable_endpoint_counters( struct reliable_endpoint_t * endpoint );
+RELIABLE_CONST uint64_t * reliable_endpoint_counters( RELIABLE_CONST struct reliable_endpoint_t * endpoint );
 
 void reliable_endpoint_destroy( struct reliable_endpoint_t * endpoint );
 

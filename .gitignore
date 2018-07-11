@@ -35,3 +35,7 @@ Secure
 cov-int
 Docker/reliable.io
 docs
+
+# Rust exclusions
+.idea
+target

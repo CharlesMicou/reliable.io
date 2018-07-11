@@ -1,0 +1,26 @@
+cargo-features = ["edition"]
+
+[package]
+name = "reliable"
+version = "0.0.1"
+authors = ["Walter Pearce <jaynus@gmail.com>"]
+build = "rust/build.rs"
+links = "libreliable"
+keywords = ["reliable"]
+license = "BSD-3-Clause"
+repository = "https://github.com/vvanders/netcode-rust"
+documentation = "https://docs.rs/netcode"
+description = "Wrapper for reliable.io library"
+edition = "2018"
+
+[dependencies]
+log = "*"
+env_logger = "*"
+atomicring = "*"
+
+[build-dependencies]
+gcc = "*"
+bindgen = "*"
+
+[lib]
+path = "rust/src/lib.rs"
