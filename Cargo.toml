@@ -16,7 +16,6 @@ edition = "2018"
 [dependencies]
 log = "*"
 env_logger = "*"
-atomicring = "*"
 
 [build-dependencies]
 gcc = "*"

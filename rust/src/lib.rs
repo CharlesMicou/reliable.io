@@ -119,6 +119,7 @@ struct reliable_fragment_reassembly_data_t
 
 */
 
+#[derive(Debug, Clone)]
 struct SentData {
     time: f64,
     acked: bool,
@@ -135,6 +136,17 @@ impl SentData {
     }
 }
 
+impl Default for SentData {
+    fn default() -> Self {
+        Self {
+            time: 0.0,
+            size: 0,
+            acked: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct RecvData {
     time: f64,
     size: usize,
@@ -148,7 +160,86 @@ impl RecvData {
     }
 }
 
+impl Default for RecvData {
+    fn default() -> Self {
+        Self {
+            time: 0.0,
+            size: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct ReassemblyData {}
+
+impl Default for ReassemblyData {
+    fn default() -> Self {
+        Self {}
+    }
+}
+
+struct SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
+    entries: Vec<T>,
+    entry_sequences: Vec<u16>,
+    sequence: u16,
+}
+
+impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
+    pub fn with_capacity(size: usize) -> Self {
+        let mut entries = Vec::with_capacity(size);
+        let mut entry_sequences = Vec::with_capacity(size);
+
+        entries.resize(size, T::default());
+        entry_sequences.resize(size, 0xFFFF);
+
+        Self {
+            sequence: 0,
+            entries,
+            entry_sequences,
+        }
+    }
+
+    pub fn insert(&mut self, data: T, sequence: u16) -> Result<u16, ReliableError> {
+
+        if Self::sequence_less_than(sequence, self.sequence - self.len() {
+
+        }
+
+        let index = (sequence % self.entries.len() as u16) as usize;
+
+        self.entries[index] = data;
+        self.entry_sequences[index] = sequence;
+
+        self.sequence = sequence + 1;
+
+        Ok(sequence)
+    }
+
+
+    pub fn clear(&mut self) {
+
+    }
+
+    pub fn sequence(&self) -> u16 {
+        self.sequence
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.entries.capacity()
+    }
+
+    fn sequence_greater_than(s1: u16, s2: u16) -> bool {
+        ( ( s1 > s2 ) && ( s1 - s2 <= 32768 ) ) || ( ( s1 < s2 ) && ( s2 - s1  > 32768 ) )
+    }
+
+    fn sequence_less_than(s1: u16, s2: u16) -> bool {
+        Self::sequence_greater_than(s2, s1)
+    }
+}
 
 pub struct Endpoint {
     time: f64,
@@ -156,9 +247,9 @@ pub struct Endpoint {
     acks: Vec<u16>,
     sequence: i32,
     num_acks: usize,
-    sent_buffer: atomicring::AtomicRingQueue<SentData>,
-    recv_buffer: atomicring::AtomicRingQueue<RecvData>,
-    reassembly_buffer: atomicring::AtomicRingQueue<ReassemblyData>,
+    sent_buffer: SequenceBuffer<SentData>,
+    recv_buffer: SequenceBuffer<RecvData>,
+    reassembly_buffer: SequenceBuffer<ReassemblyData>,
 
 }
 
@@ -171,9 +262,9 @@ impl Endpoint {
             acks: Vec::new(),
             num_acks: 0,
             sequence: 0,
-            sent_buffer: atomicring::AtomicRingQueue::with_capacity(config.sent_packets_buffer_size),
-            recv_buffer: atomicring::AtomicRingQueue::with_capacity(config.received_packets_buffer_size),
-            reassembly_buffer: atomicring::AtomicRingQueue::with_capacity(config.fragment_reassembly_buffer_size),
+            sent_buffer: SequenceBuffer::with_capacity(config.sent_packets_buffer_size),
+            recv_buffer: SequenceBuffer::with_capacity(config.received_packets_buffer_size),
+            reassembly_buffer: SequenceBuffer::with_capacity(config.fragment_reassembly_buffer_size),
         };
 
         r.acks.resize(config.ack_buffer_size, 0);
@@ -205,6 +296,10 @@ impl Endpoint {
 
         Ok(packet.len())
     }
+
+    fn generate_ack_bits(&self, ack: &mut u16, ackbits: &mut u32) {
+
+    }
 }
 
 #[cfg(test)]
@@ -218,6 +313,29 @@ mod tests {
 
 
     use super::*;
+
+    #[test]
+    fn sequence_test() {
+        #[derive(Debug, Clone, Default)]
+        struct TestData {
+            sequence: u16,
+        }
+        let mut buffer = SequenceBuffer::<TestData>::with_capacity(255);
+
+        assert_eq!(buffer.capacity(), 255);
+        assert_eq!(buffer.sequence(), 0);
+
+        for i in 0..255 {
+            buffer.insert(TestData{ sequence: i }, i);
+            assert_eq!(buffer.sequence(), i + 1);
+        }
+
+        for i in 0..255 {
+
+        }
+
+
+    }
 
     #[test]
     fn rust_impl_endpoint() {
