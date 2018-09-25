@@ -1719,7 +1719,7 @@ struct test_context_t
     struct reliable_endpoint_t * receiver;
 };
 
-static void test_transmit_packet_function( void * _context, int index, uint16_t sequence, uint8_t * packet_data, int packet_bytes )
+static void test_transmit_packet_function( void * _context, int index, uint16_t sequence, RELIABLE_CONST uint8_t * packet_data, int packet_bytes )
 {
     (void) sequence;
 
@@ -1930,7 +1930,7 @@ static int generate_packet_data( uint16_t sequence, uint8_t * packet_data )
     return packet_bytes;
 }
 
-static void validate_packet_data( uint8_t * packet_data, int packet_bytes )
+static void validate_packet_data( RELIABLE_CONST uint8_t * packet_data, int packet_bytes )
 {
     reliable_assert( packet_bytes >= 2 );
     reliable_assert( packet_bytes <= TEST_MAX_PACKET_BYTES );
