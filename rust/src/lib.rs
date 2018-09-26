@@ -37,6 +37,9 @@ pub enum ReliableError {
     Io(std::io::Error),
     ExceededMaxPacketSize,
     SequenceBufferFull,
+    PacketTooSmall,
+    InvalidPacket,
+    StalePacket,
 }
 
 impl std::fmt::Display for ReliableError {
@@ -301,24 +304,29 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
     }
 
     #[inline]
-    fn sequence_greater_than(s1: u16, s2: u16) -> bool {
+    pub fn sequence_greater_than(s1: u16, s2: u16) -> bool {
         ( ( s1 > s2 ) && ( s1 - s2 <= 32768 ) ) || ( ( s1 < s2 ) && ( s2 - s1  > 32768 ) )
     }
     #[inline]
-    fn sequence_less_than(s1: u16, s2: u16) -> bool {
+    pub fn sequence_less_than(s1: u16, s2: u16) -> bool {
         Self::sequence_greater_than(s2, s1)
+    }
+
+    #[inline]
+    pub fn check_sequence(&self, sequence: u16) -> bool {
+        ! Self::sequence_greater_than(sequence, self.sequence() - self.len() as u16)
     }
 }
 
 pub struct Endpoint <S, R>
     where   S: Fn(i32, u16, &[u8]),
-            R: Fn(i32, u16, &[u8])
+            R: Fn(i32, u16, &mut std::io::Cursor<&[u8]>) -> bool,
 {
     time: f64,
+    rtt: f32,
     config: Config,
     acks: Vec<u16>,
     sequence: i32,
-    num_acks: usize,
     sent_buffer: SequenceBuffer<SentData>,
     recv_buffer: SequenceBuffer<RecvData>,
     reassembly_buffer: SequenceBuffer<ReassemblyData>,
@@ -329,16 +337,16 @@ pub struct Endpoint <S, R>
 
 impl<S, R> Endpoint<S, R>
     where   S: Fn(i32, u16, &[u8]),
-            R: Fn(i32, u16, &[u8])
+            R: Fn(i32, u16, &mut std::io::Cursor<&[u8]>) -> bool,
 
 {
     pub fn new(config: Config, time: f64, send_function: S, recv_function: R) -> Self {
         trace!("Creating new endpoint named '{}'", config.name);
         let mut r = Self {
             time,
+            rtt: 0.0,
             config: config.clone(),
-            acks: Vec::new(),
-            num_acks: 0,
+            acks: Vec::with_capacity(config.ack_buffer_size),
             sequence: 0,
             sent_buffer: SequenceBuffer::with_capacity(config.sent_packets_buffer_size),
             recv_buffer: SequenceBuffer::with_capacity(config.received_packets_buffer_size),
@@ -349,19 +357,6 @@ impl<S, R> Endpoint<S, R>
 
         r.acks.resize(config.ack_buffer_size, 0);
         r
-    }
-
-    pub fn reset(&mut self) {
-        self.num_acks = 0;
-        self.sequence = 0;
-
-        self.sent_buffer.reset();
-        self.recv_buffer.reset();
-        self.reassembly_buffer.reset();
-    }
-
-    pub fn next_sequence(&self) -> i32 {
-        self.sequence
     }
 
     pub fn send(&mut self, index: i32, packet: &[u8]) -> Result<usize, ReliableError> {
@@ -382,9 +377,10 @@ impl<S, R> Endpoint<S, R>
 
         if packet.len() <= self.config.fragment_above {
             // no fragments
+            // TODO: reimplement this as a cursor
             trace!("Sending packet {} without fragmentation", sequence);
             let mut send_data: Vec<u8> = Vec::with_capacity(send_size);
-            self.create_header(&mut send_data, sequence as u16, ack, ack_bits);
+            self.write_header(&mut send_data, sequence as u16, ack, ack_bits);
             send_data.extend_from_slice(packet);
 
             (self.send_function)(self.config.index, sequence as u16, &send_data);
@@ -396,7 +392,146 @@ impl<S, R> Endpoint<S, R>
         Ok(packet.len())
     }
 
-    fn create_header(&mut self, buffer: &mut Vec<u8>, sequence: u16, ack: u16, ack_bits: u32, ) {
+    pub fn recv(&mut self, packet: &[u8]) -> Result<(), ReliableError> {
+        if packet.len() > self.config.max_packet_size {
+            error!("Packet too large: Attempting to recv {}, max={}", packet.len(), self.config.max_packet_size);
+            return Err(ReliableError::ExceededMaxPacketSize);
+        }
+
+
+        let mut packet_reader = std::io::Cursor::new(packet);
+        let prefix_byte = packet[0];
+
+        if prefix_byte & 1 != 0 {
+            match Self::read_header(&mut packet_reader) {
+                Ok((sequence, ack, mut ack_bits)) => {
+                    if !self.recv_buffer.check_sequence(sequence) {
+                        error!("Ignoring stale packet: {}", sequence);
+                        return Err(ReliableError::StalePacket);
+                    }
+
+                    trace!("Processing packet...");
+                    if (self.recv_function)(self.config.index, sequence, &mut packet_reader) {
+                        trace!("process packet successful");
+
+                        self.recv_buffer.insert(RecvData {
+                            time: self.time,
+                            size: self.config.packet_header_size + packet.len()
+                        }, sequence);
+
+                        for i in 0..32 {
+                            if ack_bits & 1 != 0 {
+                                let ack_sequence: u16 = ack - i;
+
+                                if let Some(sent_data) = self.sent_buffer.get_mut(ack_sequence) {
+                                    if !sent_data.acked && self.acks.len() < self.config.ack_buffer_size {
+                                        trace!("Acked packet: {}", ack_sequence);
+                                        self.acks.push(ack_sequence);
+
+                                        sent_data.acked = true;
+                                        let rtt: f32 = (self.time as f32 - sent_data.time as f32) * 1000.0;
+                                        if (self.rtt == 0.0 && rtt > 0.0) || (self.rtt - rtt).abs() < 0.00001 {
+                                            self.rtt = rtt;
+                                        } else {
+                                            self.rtt = self.rtt + ((rtt - self.rtt) * self.config.rtt_smoothing_factor);
+                                        }
+                                    }
+                                }
+                            }
+                            ack_bits = ack_bits >> 1;
+                        }
+                    } else {
+                        error!("Process received packet failed");
+                    }
+
+
+                    return Ok(());
+                },
+                Err(e) => { return Err(e); },
+            }
+        } else {
+            // Fragment
+        }
+
+        Ok(())
+    }
+
+    pub fn update(&mut self, time: f64) {
+        self.time = time;
+
+
+    }
+
+    fn read_header(reader: &mut std::io::Cursor<&[u8]>) -> Result<(u16, u16, u32), ReliableError> {
+        use byteorder::{LittleEndian, ReadBytesExt};
+
+        let packet = *(reader.get_ref());
+
+        if packet.len() < 3 {
+            error!("Packet too small for packet header (1)");
+            return Err(ReliableError::PacketTooSmall);
+        }
+        let prefix_byte = reader.read_u8().unwrap();
+
+        if prefix_byte & 1 != 0 {
+            error!("prefix byte does not indicate regular packet");
+            return Err(ReliableError::InvalidPacket);
+        }
+
+        let ack: u16;
+        let mut ack_bits: u32 = 0xFFFFFFFF;
+        let sequence = reader.read_u16::<LittleEndian>().unwrap();
+
+        if prefix_byte & (1<<5) != 0 {
+            if packet.len() < 3 + 1 {
+                error!("Packet too small for packet header (2)");
+                return Err(ReliableError::InvalidPacket);
+            }
+            let sequence_difference = reader.read_u8().unwrap();
+            ack = sequence - sequence_difference as u16;
+        } else {
+            if packet.len() < 3 + 2 {
+                error!("Packet too small for packet header (3)");
+                return Err(ReliableError::InvalidPacket);
+            }
+            ack = reader.read_u16::<LittleEndian>().unwrap();
+        }
+
+        let mut expected_bytes: usize = 0;
+        for i in 1..5 {
+            if prefix_byte & (1<<i) != 0 {
+                expected_bytes = expected_bytes + 1;
+            }
+        }
+        if packet.len() < reader.position() as usize + expected_bytes {
+            error!("Packet too small for packet header (4)");
+            return Err(ReliableError::InvalidPacket);
+        }
+
+        if prefix_byte & (1<<1) != 0 {
+            ack_bits &= 0xFFFFFF00;
+            ack_bits |= reader.read_u8().unwrap() as u32;
+        }
+
+        if prefix_byte & (1<<2) != 0 {
+            ack_bits &= 0xFFFF00FF;
+            ack_bits |= (reader.read_u8().unwrap() as u32) << 8;
+        }
+
+        if prefix_byte & (1<<3) != 0 {
+            ack_bits &= 0xFF00FFFF;
+            ack_bits |= (reader.read_u8().unwrap() as u32) << 16;
+        }
+
+        if prefix_byte & (1<<4) != 0 {
+            ack_bits &= 0x00FFFFFF;
+            ack_bits |= (reader.read_u8().unwrap() as u32) << 24;
+        }
+
+        Err(ReliableError::PacketTooSmall)
+    }
+
+    fn write_header(&mut self, buffer: &mut Vec<u8>, sequence: u16, ack: u16, ack_bits: u32, ) {
         use std::io::Cursor;
         use byteorder::{LittleEndian, WriteBytesExt};
 
@@ -457,8 +592,21 @@ impl<S, R> Endpoint<S, R>
         if ( ack_bits & 0xFF000000 ) != 0xFF000000 {
             writer.write_u8(  ( ( ack_bits & 0xFF000000 ) >> 24 ) as u8);
         }
-
     }
+
+    pub fn reset(&mut self) {
+        self.sequence = 0;
+
+        self.acks.clear();
+        self.sent_buffer.reset();
+        self.recv_buffer.reset();
+        self.reassembly_buffer.reset();
+    }
+
+    pub fn next_sequence(&self) -> i32 {
+        self.sequence
+    }
+
 }
 
 #[cfg(test)]
@@ -558,7 +706,8 @@ mod tests {
 
         let endpoint = Endpoint::new(Config::new("balls"), 0.0,
                                      |a, b, c| trace!("send"),
-                                     |a, b, c| trace!("recv"));
+                                     |a, b, c| { trace!("recv"); true }
+        );
 
     }
 }
