@@ -183,7 +183,7 @@ use std::num::Wrapping;
 
 struct SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
     entries: Vec<T>,
-    entry_sequences: Vec<u16>,
+    entry_sequences: Vec<u32>,
     sequence: u16,
     size: usize,
 }
@@ -194,7 +194,7 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
         let mut entry_sequences = Vec::with_capacity(size);
 
         entries.resize(size, T::default());
-        entry_sequences.resize(size, 0xFFFF);
+        entry_sequences.resize(size, 0xFFFFFFFF);
 
         Self {
             sequence: 0,
@@ -206,7 +206,7 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
 
     pub fn get(&self, sequence: u16) -> Option<&T> {
         let index = self.index(sequence);
-        if self.entry_sequences[index] != sequence {
+        if self.entry_sequences[index] != sequence as u32 {
             return None;
         }
 
@@ -215,7 +215,7 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
     pub fn get_mut(&mut self, sequence: u16) -> Option<&mut T> {
         let index = self.index(sequence);
 
-        if self.entry_sequences[index] != sequence {
+        if self.entry_sequences[index] != sequence as u32 {
             return None;
         }
 
@@ -236,33 +236,35 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
         let index = self.index(sequence);
 
         self.entries[index] = data;
-        self.entry_sequences[index] = sequence;
+        self.entry_sequences[index] = sequence as u32;
 
         self.sequence = (Wrapping(sequence) + Wrapping(1)).0;
 
         Ok(sequence)
     }
 
+    // TODO: THIS IS INCLUSIVE END
     pub fn remove_range(&mut self, range: std::ops::Range<u16>) {
-        // TODO: fix range bounds
-        for i in range {
+        for i in range.clone() {
+
             self.remove(i);
         }
+        self.remove(range.end);
     }
 
     pub fn remove(&mut self, sequence: u16) {
         // TODO: validity check
         let index = self.index(sequence);
         self.entries[index] = T::default();
-        self.entry_sequences[index] = 0xFFFF;
+        self.entry_sequences[index] = 0xFFFFFFFF;
     }
 
 
-    pub fn clear(&mut self) {
-        self.entries.clear();
-        self.entry_sequences.clear();
-        self.entries.resize(self.size, T::default());
-        self.entry_sequences.resize(self.size, 0xFFFF);
+    pub fn reset(&mut self) {
+        self.sequence = 0;
+        for e in self.entry_sequences.iter_mut() {
+            *e = 0;
+        }
     }
 
     pub fn sequence(&self) -> u16 {
@@ -275,6 +277,22 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
 
     pub fn capacity(&self) -> usize {
         self.entries.capacity()
+    }
+
+    fn generate_ack_bits(&self, ) -> (u16, u32) {
+        let ack = (Wrapping(self.sequence as u16) - Wrapping(1)).0;
+        let mut ack_bits: u32 = 0;
+        let mut mask: u32 = 1;
+
+        for i in 0..33 {
+            let sequence = (Wrapping(ack) - Wrapping(i as u16)).0 as u16;
+            if let Some(s) = self.get(sequence) {
+                ack_bits |= mask;
+            }
+
+            mask <<= 1;
+        }
+        (ack, ack_bits)
     }
 
     #[inline]
@@ -326,9 +344,9 @@ impl Endpoint {
         self.num_acks = 0;
         self.sequence = 0;
 
-        self.sent_buffer.clear();
-        self.recv_buffer.clear();
-        self.reassembly_buffer.clear();
+        self.sent_buffer.reset();
+        self.recv_buffer.reset();
+        self.reassembly_buffer.reset();
     }
 
     pub fn next_sequence(&self) -> i32 {
@@ -336,7 +354,6 @@ impl Endpoint {
     }
 
     pub fn send(&mut self, index: i32, packet: &[u8]) -> Result<usize, ReliableError> {
-
         if packet.len() > self.config.max_packet_size {
             error!("Packet too large: Attempting to send {}, max={}", packet.len(), self.config.max_packet_size);
             return Err(ReliableError::ExceededMaxPacketSize);
@@ -345,16 +362,16 @@ impl Endpoint {
         // Increment sequence
         self.sequence = self.sequence + 1;
 
+        let (ack, ack_bits) = self.recv_buffer.generate_ack_bits();
+
         Ok(packet.len())
-    }
-
-    fn generate_ack_bits(&self, ack: &mut u16, ackbits: &mut u32) {
-
     }
 }
 
 #[cfg(test)]
 mod tests {
+    const TEST_BUFFER_SIZE: usize = 256;
+
     fn enable_logging() {
         use env_logger::Builder;
         use log::LevelFilter;
@@ -366,34 +383,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sequence_test() {
+    fn generate_ack_bits() {
+        enable_logging();
+
         #[derive(Debug, Clone, Default)]
         struct TestData {
             sequence: u16,
         }
-        const test_size: usize = 256;
-        let mut buffer = SequenceBuffer::<TestData>::with_capacity(test_size);
 
-        assert_eq!(buffer.capacity(), test_size);
+        let mut buffer = SequenceBuffer::<TestData>::with_capacity(TEST_BUFFER_SIZE);
+
+        for i in 0..TEST_BUFFER_SIZE+1 {
+            buffer.insert(TestData{ sequence: i as u16 }, i as u16);
+        }
+
+        let (ack, ack_bits) = buffer.generate_ack_bits();
+
+        assert_eq!(ack, TEST_BUFFER_SIZE as u16);
+        assert_eq!(ack_bits, 0xFFFFFFFF);
+
+        ////
+
+        buffer.reset();
+
+        for ack in [1, 5, 9, 11].iter() {
+            buffer.insert(TestData{ sequence: *ack as u16 }, *ack as u16);
+        }
+
+        let (ack, ack_bits) = buffer.generate_ack_bits();
+
+        assert_eq!(ack, 11);
+        assert_eq!(ack_bits, ( 1 | (1<<(11-9)) | (1<<(11-5)) | (1<<(11-1)) ) );
+
+        
+
+    }
+
+    #[test]
+    fn sequence_test() {
+        enable_logging();
+
+        #[derive(Debug, Clone, Default)]
+        struct TestData {
+            sequence: u16,
+        }
+
+        let mut buffer = SequenceBuffer::<TestData>::with_capacity(TEST_BUFFER_SIZE);
+
+        assert_eq!(buffer.capacity(), TEST_BUFFER_SIZE);
         assert_eq!(buffer.sequence(), 0);
 
-        for i in 0..test_size {
+        for i in 0..TEST_BUFFER_SIZE {
             let r = buffer.get(i as u16);
             assert!(r.is_none());
         }
 
-        for i in 0..test_size*4 {
+        for i in 0..TEST_BUFFER_SIZE*4 {
             buffer.insert(TestData{ sequence: i as u16 }, i as u16);
             assert_eq!(buffer.sequence(), i as u16 + 1);
+
+            let r = buffer.get(i as u16);
+            assert_eq!(r.unwrap().sequence, i as u16);
         }
 
-        for i in 0..test_size {
+        for i in 0..TEST_BUFFER_SIZE-1 {
             let r = buffer.insert(TestData{ sequence: i as u16 }, i as u16);
             assert!(r.is_err());
         }
 
-        let mut index = test_size * 4-1;
-        for i in 0..test_size-1  {
+        let mut index = TEST_BUFFER_SIZE * 4-1;
+        for i in 0..TEST_BUFFER_SIZE-1  {
             let entry = buffer.get(index as u16);
             assert!(entry.is_some());
             let e = entry.unwrap();
