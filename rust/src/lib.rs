@@ -62,7 +62,7 @@ pub struct Config {
     name: String,
     index: i32,
     max_packet_size: usize,
-    fragment_above: u32,
+    fragment_above: usize,
     max_fragments: u32,
     fragment_size: usize,
     ack_buffer_size: usize,
@@ -72,7 +72,7 @@ pub struct Config {
     rtt_smoothing_factor: f32,
     packet_loss_smoothing_factor: f32,
     bandwidth_smoothing_factor: f32,
-    packet_header_size: u32,
+    packet_header_size: usize,
 }
 
 impl Config {
@@ -122,9 +122,9 @@ struct reliable_fragment_reassembly_data_t
 
 #[derive(Debug, Clone)]
 struct SentData {
-    time: f64,
+    time:  f64,
     acked: bool,
-    size: usize,
+    size:  usize,
 }
 
 impl SentData {
@@ -310,7 +310,10 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
     }
 }
 
-pub struct Endpoint {
+pub struct Endpoint <S, R>
+    where   S: Fn(i32, u16, &[u8]),
+            R: Fn(i32, u16, &[u8])
+{
     time: f64,
     config: Config,
     acks: Vec<u16>,
@@ -319,11 +322,17 @@ pub struct Endpoint {
     sent_buffer: SequenceBuffer<SentData>,
     recv_buffer: SequenceBuffer<RecvData>,
     reassembly_buffer: SequenceBuffer<ReassemblyData>,
+    send_function: S,
+    recv_function: R,
 
 }
 
-impl Endpoint {
-    pub fn new(config: Config, time: f64, ) -> Self {
+impl<S, R> Endpoint<S, R>
+    where   S: Fn(i32, u16, &[u8]),
+            R: Fn(i32, u16, &[u8])
+
+{
+    pub fn new(config: Config, time: f64, send_function: S, recv_function: R) -> Self {
         trace!("Creating new endpoint named '{}'", config.name);
         let mut r = Self {
             time,
@@ -334,6 +343,8 @@ impl Endpoint {
             sent_buffer: SequenceBuffer::with_capacity(config.sent_packets_buffer_size),
             recv_buffer: SequenceBuffer::with_capacity(config.received_packets_buffer_size),
             reassembly_buffer: SequenceBuffer::with_capacity(config.fragment_reassembly_buffer_size),
+            send_function,
+            recv_function
         };
 
         r.acks.resize(config.ack_buffer_size, 0);
@@ -360,11 +371,93 @@ impl Endpoint {
         }
 
         // Increment sequence
+        let sequence = self.sequence;
         self.sequence = self.sequence + 1;
 
         let (ack, ack_bits) = self.recv_buffer.generate_ack_bits();
 
+        let send_size = packet.len() + self.config.packet_header_size;
+        let sent = SentData::new(self.time, send_size);
+        self.sent_buffer.insert(sent, sequence as u16);
+
+        if packet.len() <= self.config.fragment_above {
+            // no fragments
+            trace!("Sending packet {} without fragmentation", sequence);
+            let mut send_data: Vec<u8> = Vec::with_capacity(send_size);
+            self.create_header(&mut send_data, sequence as u16, ack, ack_bits);
+            send_data.extend_from_slice(packet);
+
+            (self.send_function)(self.config.index, sequence as u16, &send_data);
+        } else {
+            // TODO: fragment
+            panic!("no fragmentation implemented")
+        }
+
         Ok(packet.len())
+    }
+
+    fn create_header(&mut self, buffer: &mut Vec<u8>, sequence: u16, ack: u16, ack_bits: u32, ) {
+        use std::io::Cursor;
+        use byteorder::{LittleEndian, WriteBytesExt};
+
+
+        buffer.resize(self.config.packet_header_size, 0);
+
+        let mut writer = Cursor::new(buffer);
+
+        let mut prefix_byte = 0;
+
+        if ( ack_bits & 0x000000FF ) != 0x000000FF {
+            prefix_byte |= (1<<1);
+        }
+
+        if ( ack_bits & 0x0000FF00 ) != 0x0000FF00 {
+            prefix_byte |= (1<<2);
+        }
+
+        if ( ack_bits & 0x00FF0000 ) != 0x00FF0000  {
+            prefix_byte |= (1<<3);
+        }
+
+        if ( ack_bits & 0xFF000000 ) != 0xFF000000 {
+            prefix_byte |= (1<<4);
+        }
+
+        let mut sequence_difference = sequence - ack;
+        if sequence_difference < 0 {
+            sequence_difference = (Wrapping(sequence_difference) + Wrapping(65536)).0;
+        }
+
+        if sequence_difference <= 255 {
+            prefix_byte |= (1<<5);
+        }
+
+        writer.write_u8(prefix_byte).unwrap();
+        writer.write_u16::<LittleEndian>(sequence).unwrap();
+
+        if sequence_difference <= 255 {
+            writer.write_u8(sequence_difference as u8);
+        }
+        else {
+            writer.write_u16::<LittleEndian>( ack );
+        }
+
+        if ( ack_bits & 0x000000FF ) != 0x000000FF {
+            writer.write_u8(  ( ack_bits & 0x000000FF ) as u8);
+        }
+
+        if ( ack_bits & 0x0000FF00 ) != 0x0000FF00 {
+            writer.write_u8(  ( ( ack_bits & 0x0000FF00 ) >> 8 ) as u8);
+        }
+
+        if ( ack_bits & 0x00FF0000 ) != 0x00FF0000 {
+            writer.write_u8(  ( ( ack_bits & 0x00FF0000 ) >> 16 ) as u8);
+        }
+
+        if ( ack_bits & 0xFF000000 ) != 0xFF000000 {
+            writer.write_u8(  ( ( ack_bits & 0xFF000000 ) >> 24 ) as u8);
+        }
+
     }
 }
 
@@ -414,9 +507,6 @@ mod tests {
 
         assert_eq!(ack, 11);
         assert_eq!(ack_bits, ( 1 | (1<<(11-9)) | (1<<(11-5)) | (1<<(11-1)) ) );
-
-        
-
     }
 
     #[test]
@@ -466,7 +556,9 @@ mod tests {
     fn rust_impl_endpoint() {
         enable_logging();
 
-        let endpoint = Endpoint::new(Config::new("balls"), 0.0);
+        let endpoint = Endpoint::new(Config::new("balls"), 0.0,
+                                     |a, b, c| trace!("send"),
+                                     |a, b, c| trace!("recv"));
 
     }
 }
