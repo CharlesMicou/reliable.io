@@ -17,6 +17,7 @@ edition = "2018"
 log = "*"
 env_logger = "*"
 byteorder = "*"
+len-trait = "*"
 
 [build-dependencies]
 gcc = "*"

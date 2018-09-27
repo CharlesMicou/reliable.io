@@ -380,13 +380,40 @@ impl<S, R> Endpoint<S, R>
             // TODO: reimplement this as a cursor
             trace!("Sending packet {} without fragmentation", sequence);
             let mut send_data: Vec<u8> = Vec::with_capacity(send_size);
-            self.write_header(&mut send_data, sequence as u16, ack, ack_bits);
+            let mut cursor = std::io::Cursor::new(send_data.as_mut_slice());
+
+            let header_size = self.write_header(&mut cursor, sequence as u16, ack, ack_bits);
+            send_data.resize(header_size, 0);
             send_data.extend_from_slice(packet);
 
             (self.send_function)(self.config.index, sequence as u16, &send_data);
         } else {
-            // TODO: fragment
-            panic!("no fragmentation implemented")
+            let mut remainder = 0;
+            if packet.len() % self.config.fragment_size > 0 {
+                remainder = 1;
+            }
+
+            let num_fragments = ( packet.len() / self.config.fragment_size ) + remainder;
+            trace!("Sending {} packet as {} fragments", sequence, num_fragments);
+
+            let fragment_buffer_size = RELIABLE_FRAGMENT_HEADER_BYTES + RELIABLE_MAX_PACKET_HEADER_BYTES + self.config.fragment_size;
+
+            for fragment_id in 0..num_fragments {
+                use byteorder::{LittleEndian, WriteBytesExt};
+
+                let mut packet = vec![];
+                let mut writer = std::io::Cursor::new(packet.as_mut_slice());
+
+                writer.write_u8(1);
+                writer.write_u16::<LittleEndian>(sequence as u16);
+                writer.write_u8(fragment_id as u8);
+                writer.write_u8(num_fragments as u8 - 1);
+
+                if fragment_id == 0 {
+                    //self.write_header(&mut writer);
+                }
+            }
+
         }
 
         Ok(packet.len())
@@ -398,12 +425,11 @@ impl<S, R> Endpoint<S, R>
             return Err(ReliableError::ExceededMaxPacketSize);
         }
 
-
         let mut packet_reader = std::io::Cursor::new(packet);
         let prefix_byte = packet[0];
 
         if prefix_byte & 1 != 0 {
-            match Self::read_header(&mut packet_reader) {
+            match self.read_header(&mut packet_reader) {
                 Ok((sequence, ack, mut ack_bits)) => {
                     if !self.recv_buffer.check_sequence(sequence) {
                         error!("Ignoring stale packet: {}", sequence);
@@ -462,7 +488,7 @@ impl<S, R> Endpoint<S, R>
 
     }
 
-    fn read_header(reader: &mut std::io::Cursor<&[u8]>) -> Result<(u16, u16, u32), ReliableError> {
+    fn read_header(&self, reader: &mut std::io::Cursor<&[u8]>) -> Result<(u16, u16, u32), ReliableError> {
         use byteorder::{LittleEndian, ReadBytesExt};
 
         let packet = *(reader.get_ref());
@@ -528,17 +554,11 @@ impl<S, R> Endpoint<S, R>
             ack_bits |= (reader.read_u8().unwrap() as u32) << 24;
         }
 
-        Err(ReliableError::PacketTooSmall)
+        Ok((sequence, ack, ack_bits))
     }
 
-    fn write_header(&mut self, buffer: &mut Vec<u8>, sequence: u16, ack: u16, ack_bits: u32, ) {
-        use std::io::Cursor;
+    fn write_header(&mut self, writer: &mut std::io::Cursor<&mut [u8]>, sequence: u16, ack: u16, ack_bits: u32, ) -> usize {
         use byteorder::{LittleEndian, WriteBytesExt};
-
-
-        buffer.resize(self.config.packet_header_size, 0);
-
-        let mut writer = Cursor::new(buffer);
 
         let mut prefix_byte = 0;
 
@@ -592,6 +612,8 @@ impl<S, R> Endpoint<S, R>
         if ( ack_bits & 0xFF000000 ) != 0xFF000000 {
             writer.write_u8(  ( ( ack_bits & 0xFF000000 ) >> 24 ) as u8);
         }
+
+        writer.position() as usize
     }
 
     pub fn reset(&mut self) {
@@ -612,16 +634,22 @@ impl<S, R> Endpoint<S, R>
 #[cfg(test)]
 mod tests {
     const TEST_BUFFER_SIZE: usize = 256;
+    
+    use super::*;
+
+    use std::sync::{Once, ONCE_INIT};
+
+    static LOGGER_INIT: Once = ONCE_INIT;
 
     fn enable_logging() {
-        use env_logger::Builder;
-        use log::LevelFilter;
+        LOGGER_INIT.call_once(||{
+            use env_logger::Builder;
+            use log::LevelFilter;
 
-        Builder::new().filter(None, LevelFilter::Trace).init();
+            Builder::new().filter(None, LevelFilter::Trace).init();
+        });
+
     }
-
-
-    use super::*;
 
     #[test]
     fn generate_ack_bits() {
@@ -701,13 +729,41 @@ mod tests {
     }
 
     #[test]
-    fn rust_impl_endpoint() {
+    fn packet_header() {
         enable_logging();
 
-        let endpoint = Endpoint::new(Config::new("balls"), 0.0,
+        let mut endpoint = Endpoint::new(Config::new("balls"), 0.0,
                                      |a, b, c| trace!("send"),
                                      |a, b, c| { trace!("recv"); true }
         );
+
+        let write_sequence = 10000;
+        let write_ack = 100;
+        let write_ack_bits = 0;
+
+        let mut buffer = vec![];
+        buffer.resize(RELIABLE_MAX_PACKET_HEADER_BYTES, 0);
+        let mut cursor = std::io::Cursor::new(buffer.as_mut_slice());
+
+        let header_size = endpoint.write_header(&mut cursor, write_sequence, write_ack, write_ack_bits);
+        trace!("Supposed header size: {}, max={}", header_size, RELIABLE_MAX_PACKET_HEADER_BYTES);
+
+        let mut cursor = std::io::Cursor::new(buffer.as_slice());
+        let (read_sequence, read_ack, read_ack_bits) = endpoint.read_header(&mut cursor).unwrap();
+
+        assert_eq!(write_sequence, read_sequence);
+        assert_eq!(write_ack, read_ack);
+        assert_eq!(write_ack_bits, read_ack_bits);
+    }
+
+    #[test]
+    fn rust_impl_endpoint() {
+        enable_logging();
+
+        //let endpoint = Endpoint::new(Config::new("balls"), 0.0,
+         //                            |a, b, c| trace!("send"),
+        //                             |a, b, c| { trace!("recv"); true }
+        //);
 
     }
 }

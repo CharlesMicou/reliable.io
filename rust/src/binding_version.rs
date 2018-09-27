@@ -283,7 +283,7 @@ mod tests {
         use env_logger::Builder;
         use log::LevelFilter;
 
-        Builder::new().filter(None, LevelFilter::Trace).init();
+        //Builder::new().filter(None, LevelFilter::Trace).init();
 
         unsafe {
             capi::reliable_log_level(RELIABLE_LOG_LEVEL_DEBUG as i32);
