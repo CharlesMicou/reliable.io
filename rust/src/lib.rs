@@ -1,4 +1,5 @@
 #![cfg_attr(feature="cargo-clippy", warn(clippy, clippy_correctness, clippy_style, clippy_pedantic, clippy_perf))]
+#![cfg_attr(feature="cargo-clippy", allow(similar_names))]
 #![feature(nll, stmt_expr_attributes)]
 #![warn(rust_2018_idioms)]
 
@@ -7,8 +8,21 @@
 
 #[macro_use] extern crate log;
 
+use std::num::Wrapping;
+
 pub mod capi;
 pub mod binding_version;
+
+mod sequence_buffer;
+pub use crate::sequence_buffer::SequenceBuffer as SequenceBuffer;
+
+mod error;
+pub use crate::error::ReliableError as ReliableError;
+
+mod headers;
+pub use crate::headers::PacketHeader as PacketHeader;
+pub use crate::headers::FragmentHeader as FragmentHeader;
+pub use crate::headers::HeaderParser as Header;
 
 /* TODO:
 enum Counters {
@@ -29,39 +43,12 @@ enum Counters {
 
 */
 
-const RELIABLE_MAX_PACKET_HEADER_BYTES: usize = 9;
-const RELIABLE_FRAGMENT_HEADER_BYTES: usize = 5;
-
-#[derive(Debug)]
-pub enum ReliableError {
-    Io(std::io::Error),
-    ExceededMaxPacketSize,
-    SequenceBufferFull,
-    PacketTooSmall,
-    InvalidPacket,
-    StalePacket,
-}
-
-impl std::fmt::Display for ReliableError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid first item to double")
-    }
-}
-
-// This is important for other errors to wrap this one.
-impl std::error::Error for ReliableError {
-    fn description(&self) -> &str {
-        "invalid first item to double"
-    }
-
-    fn cause(&self) -> Option<&dyn std::error::Error> {
-        None
-    }
-}
+pub const RELIABLE_MAX_PACKET_HEADER_BYTES: usize = 9;
+pub const RELIABLE_FRAGMENT_HEADER_BYTES: usize = 5;
 
 
 #[derive(Clone)]
-pub struct Config {
+pub struct EndpointConfig {
     name: String,
     index: i32,
     max_packet_size: usize,
@@ -78,7 +65,7 @@ pub struct Config {
     packet_header_size: usize,
 }
 
-impl Config {
+impl EndpointConfig {
     fn new(name: &str, ) -> Self {
         let mut r = Self::default();
         r.name = name.to_string();
@@ -86,7 +73,7 @@ impl Config {
     }
 }
 
-impl Default for Config {
+impl Default for EndpointConfig {
     fn default() -> Self {
         Self {
             name: "".to_string(),
@@ -182,154 +169,19 @@ impl Default for ReassemblyData {
     }
 }
 
-use std::num::Wrapping;
-
-struct SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
-    entries: Vec<T>,
-    entry_sequences: Vec<u32>,
-    sequence: u16,
-    size: usize,
-}
-
-impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
-    pub fn with_capacity(size: usize) -> Self {
-        let mut entries = Vec::with_capacity(size);
-        let mut entry_sequences = Vec::with_capacity(size);
-
-        entries.resize(size, T::default());
-        entry_sequences.resize(size, 0xFFFFFFFF);
-
-        Self {
-            sequence: 0,
-            size,
-            entries,
-            entry_sequences,
-        }
-    }
-
-    pub fn get(&self, sequence: u16) -> Option<&T> {
-        let index = self.index(sequence);
-        if self.entry_sequences[index] != sequence as u32 {
-            return None;
-        }
-
-        Some(&self.entries[index])
-    }
-    pub fn get_mut(&mut self, sequence: u16) -> Option<&mut T> {
-        let index = self.index(sequence);
-
-        if self.entry_sequences[index] != sequence as u32 {
-            return None;
-        }
-
-        Some(&mut self.entries[index])
-    }
-
-    pub fn insert(&mut self, data: T, sequence: u16) -> Result<u16, ReliableError> {
-
-        if Self::sequence_less_than(sequence, (Wrapping(self.sequence) - Wrapping(self.len() as u16)).0 ) {
-            return Err(ReliableError::SequenceBufferFull);
-        }
-        if Self::sequence_greater_than( (Wrapping(sequence) + Wrapping(1)).0, self.sequence ) {
-            self.remove_range(self.sequence..sequence);
-
-            self.sequence = (Wrapping(sequence) + Wrapping(1)).0;
-        }
-
-        let index = self.index(sequence);
-
-        self.entries[index] = data;
-        self.entry_sequences[index] = sequence as u32;
-
-        self.sequence = (Wrapping(sequence) + Wrapping(1)).0;
-
-        Ok(sequence)
-    }
-
-    // TODO: THIS IS INCLUSIVE END
-    pub fn remove_range(&mut self, range: std::ops::Range<u16>) {
-        for i in range.clone() {
-
-            self.remove(i);
-        }
-        self.remove(range.end);
-    }
-
-    pub fn remove(&mut self, sequence: u16) {
-        // TODO: validity check
-        let index = self.index(sequence);
-        self.entries[index] = T::default();
-        self.entry_sequences[index] = 0xFFFFFFFF;
-    }
-
-
-    pub fn reset(&mut self) {
-        self.sequence = 0;
-        for e in self.entry_sequences.iter_mut() {
-            *e = 0;
-        }
-    }
-
-    pub fn sequence(&self) -> u16 {
-        self.sequence
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn capacity(&self) -> usize {
-        self.entries.capacity()
-    }
-
-    fn generate_ack_bits(&self, ) -> (u16, u32) {
-        let ack = (Wrapping(self.sequence as u16) - Wrapping(1)).0;
-        let mut ack_bits: u32 = 0;
-        let mut mask: u32 = 1;
-
-        for i in 0..33 {
-            let sequence = (Wrapping(ack) - Wrapping(i as u16)).0 as u16;
-            if let Some(s) = self.get(sequence) {
-                ack_bits |= mask;
-            }
-
-            mask <<= 1;
-        }
-        (ack, ack_bits)
-    }
-
-    #[inline]
-    fn index(&self, sequence: u16) -> usize {
-        (sequence % self.entries.len() as u16) as usize
-    }
-
-    #[inline]
-    pub fn sequence_greater_than(s1: u16, s2: u16) -> bool {
-        ( ( s1 > s2 ) && ( s1 - s2 <= 32768 ) ) || ( ( s1 < s2 ) && ( s2 - s1  > 32768 ) )
-    }
-    #[inline]
-    pub fn sequence_less_than(s1: u16, s2: u16) -> bool {
-        Self::sequence_greater_than(s2, s1)
-    }
-
-    #[inline]
-    pub fn check_sequence(&self, sequence: u16) -> bool {
-        ! Self::sequence_greater_than(sequence, self.sequence() - self.len() as u16)
-    }
-}
-
 pub struct Endpoint <S, R>
     where   S: Fn(i32, u16, &[u8]),
             R: Fn(i32, u16, &mut std::io::Cursor<&[u8]>) -> bool,
 {
     time: f64,
     rtt: f32,
-    config: Config,
+    config: EndpointConfig,
     acks: Vec<u16>,
     sequence: i32,
     sent_buffer: SequenceBuffer<SentData>,
     recv_buffer: SequenceBuffer<RecvData>,
     reassembly_buffer: SequenceBuffer<ReassemblyData>,
+    temp_packet_buffer: Vec<u8>,
     send_function: S,
     recv_function: R,
 
@@ -340,7 +192,8 @@ impl<S, R> Endpoint<S, R>
             R: Fn(i32, u16, &mut std::io::Cursor<&[u8]>) -> bool,
 
 {
-    pub fn new(config: Config, time: f64, send_function: S, recv_function: R) -> Self {
+    #[cfg_attr(feature="cargo-clippy", allow(needless_pass_by_value))]
+    pub fn new(config: EndpointConfig, time: f64, send_function: S, recv_function: R) -> Self {
         trace!("Creating new endpoint named '{}'", config.name);
         let mut r = Self {
             time,
@@ -351,6 +204,7 @@ impl<S, R> Endpoint<S, R>
             sent_buffer: SequenceBuffer::with_capacity(config.sent_packets_buffer_size),
             recv_buffer: SequenceBuffer::with_capacity(config.received_packets_buffer_size),
             reassembly_buffer: SequenceBuffer::with_capacity(config.fragment_reassembly_buffer_size),
+            temp_packet_buffer: Vec::with_capacity(config.max_packet_size),
             send_function,
             recv_function
         };
@@ -359,7 +213,8 @@ impl<S, R> Endpoint<S, R>
         r
     }
 
-    pub fn send(&mut self, index: i32, packet: &[u8]) -> Result<usize, ReliableError> {
+    #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation, cast_sign_loss))]
+    pub fn send(&mut self, packet: &[u8]) -> Result<usize, ReliableError> {
         if packet.len() > self.config.max_packet_size {
             error!("Packet too large: Attempting to send {}, max={}", packet.len(), self.config.max_packet_size);
             return Err(ReliableError::ExceededMaxPacketSize);
@@ -367,58 +222,59 @@ impl<S, R> Endpoint<S, R>
 
         // Increment sequence
         let sequence = self.sequence;
-        self.sequence = self.sequence + 1;
+        self.sequence += 1;
 
-        let (ack, ack_bits) = self.recv_buffer.generate_ack_bits();
+        let (ack, ack_bits) = self.recv_buffer.ack_bits();
 
         let send_size = packet.len() + self.config.packet_header_size;
         let sent = SentData::new(self.time, send_size);
-        self.sent_buffer.insert(sent, sequence as u16);
+        self.sent_buffer.insert(sent, sequence as u16)?;
+
+        let header = PacketHeader::new(sequence as u16, ack, ack_bits);
 
         if packet.len() <= self.config.fragment_above {
             // no fragments
             // TODO: reimplement this as a cursor
             trace!("Sending packet {} without fragmentation", sequence);
-            let mut send_data: Vec<u8> = Vec::with_capacity(send_size);
-            let mut cursor = std::io::Cursor::new(send_data.as_mut_slice());
 
-            let header_size = self.write_header(&mut cursor, sequence as u16, ack, ack_bits);
-            send_data.resize(header_size, 0);
-            send_data.extend_from_slice(packet);
+            self.temp_packet_buffer.resize(header.size(), 0);
+            let mut cursor = std::io::Cursor::new(self.temp_packet_buffer.as_mut_slice());
+            header.write(&mut cursor)?;
+            self.temp_packet_buffer.extend_from_slice(packet);
 
-            (self.send_function)(self.config.index, sequence as u16, &send_data);
+            (self.send_function)(self.config.index, sequence as u16, &self.temp_packet_buffer);
         } else {
-            let mut remainder = 0;
-            if packet.len() % self.config.fragment_size > 0 {
-                remainder = 1;
-            }
+            trace!("Sending packet {} with fragmentation", sequence);
 
-            let num_fragments = ( packet.len() / self.config.fragment_size ) + remainder;
-            trace!("Sending {} packet as {} fragments", sequence, num_fragments);
-
-            let fragment_buffer_size = RELIABLE_FRAGMENT_HEADER_BYTES + RELIABLE_MAX_PACKET_HEADER_BYTES + self.config.fragment_size;
+            let remainder = if packet.len() % self.config.fragment_size  > 0 { 1 } else { 0 };
+            let num_fragments = (packet.len() / self.config.fragment_size ) + remainder;
 
             for fragment_id in 0..num_fragments {
-                use byteorder::{LittleEndian, WriteBytesExt};
+                let fragment = FragmentHeader::new(fragment_id as u8, (num_fragments - 1) as u8, header.clone());
+                self.temp_packet_buffer.resize(fragment.size(), 0);
 
-                let mut packet = vec![];
-                let mut writer = std::io::Cursor::new(packet.as_mut_slice());
+                let mut cursor = std::io::Cursor::new(self.temp_packet_buffer.as_mut_slice());
+                fragment.write(&mut cursor)?;
 
-                writer.write_u8(1);
-                writer.write_u16::<LittleEndian>(sequence as u16);
-                writer.write_u8(fragment_id as u8);
-                writer.write_u8(num_fragments as u8 - 1);
-
-                if fragment_id == 0 {
-                    //self.write_header(&mut writer);
+                let cur_start = fragment_id * self.config.fragment_size;
+                let mut cur_end = (fragment_id + 1) * self.config.fragment_size;
+                if cur_end + self.config.fragment_size > packet.len() {
+                    cur_end = packet.len();
                 }
-            }
 
+                self.temp_packet_buffer.extend_from_slice(&packet[cur_start..cur_end]);
+
+                (self.send_function)(self.config.index, sequence as u16, &self.temp_packet_buffer);
+                self.temp_packet_buffer.clear();
+            }
         }
+
+
 
         Ok(packet.len())
     }
 
+    #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation, cast_sign_loss, if_not_else))]
     pub fn recv(&mut self, packet: &[u8]) -> Result<(), ReliableError> {
         if packet.len() > self.config.max_packet_size {
             error!("Packet too large: Attempting to recv {}, max={}", packet.len(), self.config.max_packet_size);
@@ -429,25 +285,26 @@ impl<S, R> Endpoint<S, R>
         let prefix_byte = packet[0];
 
         if prefix_byte & 1 != 0 {
-            match self.read_header(&mut packet_reader) {
-                Ok((sequence, ack, mut ack_bits)) => {
-                    if !self.recv_buffer.check_sequence(sequence) {
-                        error!("Ignoring stale packet: {}", sequence);
+            match PacketHeader::parse(&mut packet_reader) {
+                Ok(header) => {
+                    if !self.recv_buffer.check_sequence(header.sequence()) {
+                        error!("Ignoring stale packet: {}", header.sequence());
                         return Err(ReliableError::StalePacket);
                     }
 
                     trace!("Processing packet...");
-                    if (self.recv_function)(self.config.index, sequence, &mut packet_reader) {
+                    if (self.recv_function)(self.config.index, header.sequence(), &mut packet_reader) {
                         trace!("process packet successful");
 
                         self.recv_buffer.insert(RecvData {
                             time: self.time,
                             size: self.config.packet_header_size + packet.len()
-                        }, sequence);
+                        }, header.sequence())?;
 
+                        let mut ack_bits = header.ack_bits();
                         for i in 0..32 {
                             if ack_bits & 1 != 0 {
-                                let ack_sequence: u16 = ack - i;
+                                let ack_sequence: u16 = header.ack() - i;
 
                                 if let Some(sent_data) = self.sent_buffer.get_mut(ack_sequence) {
                                     if !sent_data.acked && self.acks.len() < self.config.ack_buffer_size {
@@ -464,7 +321,7 @@ impl<S, R> Endpoint<S, R>
                                     }
                                 }
                             }
-                            ack_bits = ack_bits >> 1;
+                            ack_bits >>= 1;
                         }
                     } else {
                         error!("Process received packet failed");
@@ -476,7 +333,13 @@ impl<S, R> Endpoint<S, R>
                 Err(e) => { return Err(e); },
             }
         } else {
-            // Fragment
+            match FragmentHeader::parse(&mut packet_reader) {
+                Ok(header) => {
+                    trace!("parsed fragment header correctly, processing reassembly..: id={}, s={}", header.sequence(), header.id());
+
+                },
+                Err(e) => { return Err(e); },
+            }
         }
 
         Ok(())
@@ -486,134 +349,6 @@ impl<S, R> Endpoint<S, R>
         self.time = time;
 
 
-    }
-
-    fn read_header(&self, reader: &mut std::io::Cursor<&[u8]>) -> Result<(u16, u16, u32), ReliableError> {
-        use byteorder::{LittleEndian, ReadBytesExt};
-
-        let packet = *(reader.get_ref());
-
-        if packet.len() < 3 {
-            error!("Packet too small for packet header (1)");
-            return Err(ReliableError::PacketTooSmall);
-        }
-        let prefix_byte = reader.read_u8().unwrap();
-
-        if prefix_byte & 1 != 0 {
-            error!("prefix byte does not indicate regular packet");
-            return Err(ReliableError::InvalidPacket);
-        }
-
-        let ack: u16;
-        let mut ack_bits: u32 = 0xFFFFFFFF;
-        let sequence = reader.read_u16::<LittleEndian>().unwrap();
-
-        if prefix_byte & (1<<5) != 0 {
-            if packet.len() < 3 + 1 {
-                error!("Packet too small for packet header (2)");
-                return Err(ReliableError::InvalidPacket);
-            }
-            let sequence_difference = reader.read_u8().unwrap();
-            ack = sequence - sequence_difference as u16;
-        } else {
-            if packet.len() < 3 + 2 {
-                error!("Packet too small for packet header (3)");
-                return Err(ReliableError::InvalidPacket);
-            }
-            ack = reader.read_u16::<LittleEndian>().unwrap();
-        }
-
-        let mut expected_bytes: usize = 0;
-        for i in 1..5 {
-            if prefix_byte & (1<<i) != 0 {
-                expected_bytes = expected_bytes + 1;
-            }
-        }
-        if packet.len() < reader.position() as usize + expected_bytes {
-            error!("Packet too small for packet header (4)");
-            return Err(ReliableError::InvalidPacket);
-        }
-
-        if prefix_byte & (1<<1) != 0 {
-            ack_bits &= 0xFFFFFF00;
-            ack_bits |= reader.read_u8().unwrap() as u32;
-        }
-
-        if prefix_byte & (1<<2) != 0 {
-            ack_bits &= 0xFFFF00FF;
-            ack_bits |= (reader.read_u8().unwrap() as u32) << 8;
-        }
-
-        if prefix_byte & (1<<3) != 0 {
-            ack_bits &= 0xFF00FFFF;
-            ack_bits |= (reader.read_u8().unwrap() as u32) << 16;
-        }
-
-        if prefix_byte & (1<<4) != 0 {
-            ack_bits &= 0x00FFFFFF;
-            ack_bits |= (reader.read_u8().unwrap() as u32) << 24;
-        }
-
-        Ok((sequence, ack, ack_bits))
-    }
-
-    fn write_header(&mut self, writer: &mut std::io::Cursor<&mut [u8]>, sequence: u16, ack: u16, ack_bits: u32, ) -> usize {
-        use byteorder::{LittleEndian, WriteBytesExt};
-
-        let mut prefix_byte = 0;
-
-        if ( ack_bits & 0x000000FF ) != 0x000000FF {
-            prefix_byte |= (1<<1);
-        }
-
-        if ( ack_bits & 0x0000FF00 ) != 0x0000FF00 {
-            prefix_byte |= (1<<2);
-        }
-
-        if ( ack_bits & 0x00FF0000 ) != 0x00FF0000  {
-            prefix_byte |= (1<<3);
-        }
-
-        if ( ack_bits & 0xFF000000 ) != 0xFF000000 {
-            prefix_byte |= (1<<4);
-        }
-
-        let mut sequence_difference = sequence - ack;
-        if sequence_difference < 0 {
-            sequence_difference = (Wrapping(sequence_difference) + Wrapping(65536)).0;
-        }
-
-        if sequence_difference <= 255 {
-            prefix_byte |= (1<<5);
-        }
-
-        writer.write_u8(prefix_byte).unwrap();
-        writer.write_u16::<LittleEndian>(sequence).unwrap();
-
-        if sequence_difference <= 255 {
-            writer.write_u8(sequence_difference as u8);
-        }
-        else {
-            writer.write_u16::<LittleEndian>( ack );
-        }
-
-        if ( ack_bits & 0x000000FF ) != 0x000000FF {
-            writer.write_u8(  ( ack_bits & 0x000000FF ) as u8);
-        }
-
-        if ( ack_bits & 0x0000FF00 ) != 0x0000FF00 {
-            writer.write_u8(  ( ( ack_bits & 0x0000FF00 ) >> 8 ) as u8);
-        }
-
-        if ( ack_bits & 0x00FF0000 ) != 0x00FF0000 {
-            writer.write_u8(  ( ( ack_bits & 0x00FF0000 ) >> 16 ) as u8);
-        }
-
-        if ( ack_bits & 0xFF000000 ) != 0xFF000000 {
-            writer.write_u8(  ( ( ack_bits & 0xFF000000 ) >> 24 ) as u8);
-        }
-
-        writer.position() as usize
     }
 
     pub fn reset(&mut self) {
@@ -652,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_ack_bits() {
+    fn ack_bits() {
         enable_logging();
 
         #[derive(Debug, Clone, Default)]
@@ -663,10 +398,10 @@ mod tests {
         let mut buffer = SequenceBuffer::<TestData>::with_capacity(TEST_BUFFER_SIZE);
 
         for i in 0..TEST_BUFFER_SIZE+1 {
-            buffer.insert(TestData{ sequence: i as u16 }, i as u16);
+            buffer.insert(TestData{ sequence: i as u16 }, i as u16).unwrap();
         }
 
-        let (ack, ack_bits) = buffer.generate_ack_bits();
+        let (ack, ack_bits) = buffer.ack_bits();
 
         assert_eq!(ack, TEST_BUFFER_SIZE as u16);
         assert_eq!(ack_bits, 0xFFFFFFFF);
@@ -676,10 +411,10 @@ mod tests {
         buffer.reset();
 
         for ack in [1, 5, 9, 11].iter() {
-            buffer.insert(TestData{ sequence: *ack as u16 }, *ack as u16);
+            buffer.insert(TestData{ sequence: *ack as u16 }, *ack as u16).unwrap();
         }
 
-        let (ack, ack_bits) = buffer.generate_ack_bits();
+        let (ack, ack_bits) = buffer.ack_bits();
 
         assert_eq!(ack, 11);
         assert_eq!(ack_bits, ( 1 | (1<<(11-9)) | (1<<(11-5)) | (1<<(11-1)) ) );
@@ -705,7 +440,7 @@ mod tests {
         }
 
         for i in 0..TEST_BUFFER_SIZE*4 {
-            buffer.insert(TestData{ sequence: i as u16 }, i as u16);
+            buffer.insert(TestData{ sequence: i as u16 }, i as u16).unwrap();
             assert_eq!(buffer.sequence(), i as u16 + 1);
 
             let r = buffer.get(i as u16);
@@ -718,7 +453,7 @@ mod tests {
         }
 
         let mut index = TEST_BUFFER_SIZE * 4-1;
-        for i in 0..TEST_BUFFER_SIZE-1  {
+        for _ in 0..TEST_BUFFER_SIZE-1  {
             let entry = buffer.get(index as u16);
             assert!(entry.is_some());
             let e = entry.unwrap();
@@ -729,13 +464,31 @@ mod tests {
     }
 
     #[test]
+    fn fragment_header() {
+        let write_id: u8 = 111;
+        let write_num : u8 = 123;
+        let write_sequence : u16 = 999;
+
+        let write_fragment = FragmentHeader::new_fragment(write_id, write_num, write_sequence);
+
+        let mut buffer = vec![];
+        buffer.resize(RELIABLE_MAX_PACKET_HEADER_BYTES, 0);
+        let mut cursor = std::io::Cursor::new(buffer.as_mut_slice());
+
+        write_fragment.write(&mut cursor).unwrap();
+
+        let mut cursor = std::io::Cursor::new(buffer.as_slice());
+        let read_fragment = FragmentHeader::parse(&mut cursor).unwrap();
+
+        assert_eq!(write_fragment.sequence(), read_fragment.sequence());
+        assert_eq!(write_fragment.id(), read_fragment.id());
+        assert_eq!(write_fragment.count(), read_fragment.count());
+
+    }
+
+    #[test]
     fn packet_header() {
         enable_logging();
-
-        let mut endpoint = Endpoint::new(Config::new("balls"), 0.0,
-                                     |a, b, c| trace!("send"),
-                                     |a, b, c| { trace!("recv"); true }
-        );
 
         let write_sequence = 10000;
         let write_ack = 100;
@@ -745,25 +498,25 @@ mod tests {
         buffer.resize(RELIABLE_MAX_PACKET_HEADER_BYTES, 0);
         let mut cursor = std::io::Cursor::new(buffer.as_mut_slice());
 
-        let header_size = endpoint.write_header(&mut cursor, write_sequence, write_ack, write_ack_bits);
-        trace!("Supposed header size: {}, max={}", header_size, RELIABLE_MAX_PACKET_HEADER_BYTES);
+        let write_packet = PacketHeader::new(write_sequence, write_ack, write_ack_bits);
+        write_packet.write(&mut cursor).unwrap();
 
         let mut cursor = std::io::Cursor::new(buffer.as_slice());
-        let (read_sequence, read_ack, read_ack_bits) = endpoint.read_header(&mut cursor).unwrap();
+        let read_packet = PacketHeader::parse(&mut cursor).unwrap();
 
-        assert_eq!(write_sequence, read_sequence);
-        assert_eq!(write_ack, read_ack);
-        assert_eq!(write_ack_bits, read_ack_bits);
+        assert_eq!(write_packet.sequence(), read_packet.sequence());
+        assert_eq!(write_packet.ack(), read_packet.ack());
+        assert_eq!(write_packet.ack_bits(), read_packet.ack_bits());
     }
 
     #[test]
     fn rust_impl_endpoint() {
         enable_logging();
 
-        //let endpoint = Endpoint::new(Config::new("balls"), 0.0,
-         //                            |a, b, c| trace!("send"),
-        //                             |a, b, c| { trace!("recv"); true }
-        //);
+        let _endpoint = Endpoint::new(EndpointConfig::new("balls"), 0.0,
+                                     |_, _, _| trace!("send"),
+                                     |_, _, _| { trace!("recv"); true }
+        );
 
     }
 }

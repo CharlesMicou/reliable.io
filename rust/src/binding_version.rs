@@ -1,3 +1,5 @@
+#![cfg_attr(feature="cargo-clippy", allow(clippy, clippy_correctness, clippy_style, clippy_pedantic, clippy_perf))]
+
 use crate::capi::*;
 use crate::capi as capi;
 use std::sync::Arc;

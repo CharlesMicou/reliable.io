@@ -15,7 +15,6 @@ fn main() {
 
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-
     // Build the wrapper bindings librt_transports
     let bindings = bindgen::Builder::default()
         .header("reliable.h")
@@ -23,7 +22,6 @@ fn main() {
         .generate()
         .expect("Unable to generate bindings");
 
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     bindings
         .write_to_file(out_path.join("private_bindings.rs"))
         .expect("Couldn't write bindings!");
