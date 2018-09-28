@@ -209,6 +209,7 @@ impl<'a> FragmentHeader {
     pub fn sequence(&self,) -> u16 { self.sequence }
     pub fn id(&self,) -> u8 { self.id }
     pub fn count(&self,) -> u8 { self.num_fragments }
+    pub fn packet_header(&self, ) -> Option<&PacketHeader> { self.packet_header.as_ref() }
 }
 
 impl HeaderParser for FragmentHeader {

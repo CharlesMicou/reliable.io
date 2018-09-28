@@ -43,7 +43,7 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
     }
 
     #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation))]
-    pub fn insert(&mut self, data: T, sequence: u16) -> Result<u16, ReliableError> {
+    pub fn insert(&mut self, data: T, sequence: u16) -> Result<&mut T, ReliableError> {
 
         if Self::sequence_less_than(sequence, (Wrapping(self.sequence) - Wrapping(self.len() as u16)).0 ) {
             return Err(ReliableError::SequenceBufferFull);
@@ -61,7 +61,7 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
 
         self.sequence = (Wrapping(sequence) + Wrapping(1)).0;
 
-        Ok(sequence)
+        Ok(&mut self.entries[index])
     }
 
     // TODO: THIS IS INCLUSIVE END

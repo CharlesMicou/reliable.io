@@ -110,6 +110,48 @@ struct reliable_fragment_reassembly_data_t
 
 */
 
+#[derive(Clone)]
+struct ReassemblyData {
+    sequence: u16,
+    ack: u16,
+    ack_bits: u32,
+    num_fragments_received: usize,
+    num_fragments_total: usize,
+    buffer: Vec<u8>,
+    fragments_received: [bool; 256],
+    header_size: usize,
+}
+
+impl ReassemblyData {
+    pub fn new(sequence: u16, ack: u16, ack_bits: u32, num_fragments_total: usize, header_size: usize, prealloc: usize,) -> Self {
+        Self {
+            sequence,
+            ack,
+            ack_bits,
+            num_fragments_received: 0,
+            num_fragments_total,
+            buffer: Vec::with_capacity(prealloc),
+            fragments_received: [false; 256],
+            header_size,
+        }
+    }
+}
+impl Default for ReassemblyData {
+    fn default() -> Self {
+        Self {
+            sequence: 0,
+            ack: 0,
+            ack_bits: 0,
+            num_fragments_received: 0,
+            num_fragments_total: 0,
+            buffer: Vec::with_capacity(1024),
+            fragments_received: [false; 256],
+            header_size: 0,
+        }
+    }
+}
+
+
 #[derive(Debug, Clone)]
 struct SentData {
     time:  f64,
@@ -157,15 +199,6 @@ impl Default for RecvData {
             time: 0.0,
             size: 0,
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct ReassemblyData {}
-
-impl Default for ReassemblyData {
-    fn default() -> Self {
-        Self {}
     }
 }
 
@@ -281,6 +314,7 @@ impl<S, R> Endpoint<S, R>
             return Err(ReliableError::ExceededMaxPacketSize);
         }
 
+        let mut ret = Ok(());
         let mut packet_reader = std::io::Cursor::new(packet);
         let prefix_byte = packet[0];
 
@@ -296,10 +330,7 @@ impl<S, R> Endpoint<S, R>
                     if (self.recv_function)(self.config.index, header.sequence(), &mut packet_reader) {
                         trace!("process packet successful");
 
-                        self.recv_buffer.insert(RecvData {
-                            time: self.time,
-                            size: self.config.packet_header_size + packet.len()
-                        }, header.sequence())?;
+                        self.recv_buffer.insert(RecvData::new(self.time, self.config.packet_header_size + packet.len()), header.sequence())?;
 
                         let mut ack_bits = header.ack_bits();
                         for i in 0..32 {
@@ -337,12 +368,69 @@ impl<S, R> Endpoint<S, R>
                 Ok(header) => {
                     trace!("parsed fragment header correctly, processing reassembly..: id={}, s={}", header.sequence(), header.id());
 
+                    {
+                        let reassembly_data = match self.reassembly_buffer.get_mut(header.sequence()) {
+                            Some(reassembly_data) => {
+                                reassembly_data
+                            },
+                            None => {
+                                if header.id() == 0 {
+                                    if header.packet_header().is_none() {
+                                        return Err(ReliableError::InvalidFragment);
+                                    }
+
+                                    let ack = header.packet_header().unwrap().ack();
+                                    let ack_bits = header.packet_header().unwrap().ack_bits();
+                                    let reassembly_data = ReassemblyData::new(header.sequence(),
+                                                                              ack,
+                                                                              ack_bits,
+                                                                              usize::from(header.count()),
+                                                                              header.size(),
+                                                                              RELIABLE_MAX_PACKET_HEADER_BYTES + self.config.fragment_size);
+
+                                    self.reassembly_buffer.insert(reassembly_data.clone(), header.sequence())?
+                                } else {
+                                    panic!("Error!");
+                                }
+                            },
+                        };
+
+                        // Got the data
+                        if reassembly_data.num_fragments_total != usize::from(header.count()) {
+                            return Err(ReliableError::InvalidFragment);
+                        }
+
+                        if reassembly_data.fragments_received[usize::from(header.id())] {
+                            return Err(ReliableError::InvalidFragment);
+                        }
+
+                        trace!("recieved fragment #{}/{}, sequence={}", header.id(), header.count(), reassembly_data.sequence);
+                        reassembly_data.num_fragments_received += 1;
+                        reassembly_data.fragments_received[usize::from(header.id())] = true;
+
+                        let start_position: usize = if header.id() == 0 {
+                            5
+                        } else {
+                            header.size()
+                        };
+
+                        reassembly_data.buffer.extend_from_slice(&packet[start_position..packet.len()]);
+
+                        if reassembly_data.num_fragments_received == reassembly_data.num_fragments_total {
+                            let sequence = reassembly_data.sequence as u16;
+                            let buffer = reassembly_data.buffer.clone(); // TODO: WHY DO I HAVE TO DO THIS CLONE!?!?!
+
+                            ret = self.recv(buffer.as_slice());
+
+                            self.reassembly_buffer.remove(sequence);
+                        }
+                    }
                 },
                 Err(e) => { return Err(e); },
             }
         }
 
-        Ok(())
+        ret
     }
 
     pub fn update(&mut self, time: f64) {
