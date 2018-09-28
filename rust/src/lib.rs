@@ -202,10 +202,7 @@ impl Default for RecvData {
     }
 }
 
-pub struct Endpoint <S, R>
-    where   S: Fn(i32, u16, &[u8]),
-            R: Fn(i32, u16, &[u8]) -> bool,
-{
+pub struct Endpoint {
     time: f64,
     rtt: f32,
     config: EndpointConfig,
@@ -215,18 +212,14 @@ pub struct Endpoint <S, R>
     recv_buffer: SequenceBuffer<RecvData>,
     reassembly_buffer: SequenceBuffer<ReassemblyData>,
     temp_packet_buffer: Vec<u8>,
-    send_function: S,
-    recv_function: R,
+    send_function: &'static Fn(i32, u16, &[u8]),
+    recv_function: &'static Fn(i32, u16, &[u8]) -> bool,
 
 }
 
-impl<S, R> Endpoint<S, R>
-    where   S: Fn(i32, u16, &[u8]),
-            R: Fn(i32, u16, &[u8]) -> bool,
-
-{
+impl Endpoint {
     #[cfg_attr(feature="cargo-clippy", allow(needless_pass_by_value))]
-    pub fn new(config: EndpointConfig, time: f64, send_function: S, recv_function: R) -> Self {
+    pub fn new(config: EndpointConfig, time: f64, send_function: &'static Fn(i32, u16, &[u8]), recv_function: &'static Fn(i32, u16, &[u8]) -> bool) -> Self {
         trace!("Creating new endpoint named '{}'", config.name);
         Self {
             time,
@@ -551,17 +544,17 @@ mod tests {
         for i in 0..TEST_FRAGMENTS_NUM_ITERATIONS {
             // forward packets to their endpoints
             match one_recv.try_recv() {
-                Ok(v) => { one.recv(v.as_slice()); },
+                Ok(v) => { one.recv(v.as_slice()).unwrap(); },
                 Err(_) => {}
             }
             match two_recv.try_recv() {
-                Ok(v) => { two.recv(v.as_slice()); },
+                Ok(v) => { two.recv(v.as_slice()).unwrap(); },
                 Err(_) => {}
             }
 
             // Send test packets
-            one.send(test_data);
-            two.send(test_data);
+            one.send(test_data).unwrap();
+            two.send(test_data).unwrap();
 
             time += delta_time;
             one.update(time);
@@ -583,7 +576,7 @@ mod tests {
         let mut one = Endpoint::new(EndpointConfig::new("one"), time,
         |_, sequence, buffer| {
             trace!("ONE: Sending packet: len={}", buffer.len());
-            two_send.send(buffer.to_vec());
+            two_send.send(buffer.to_vec()).unwrap();
         },
         |_, _, data| {
 
@@ -595,7 +588,7 @@ mod tests {
         let mut two = Endpoint::new(EndpointConfig::new("two"), time,
         |_, sequence, buffer| {
             trace!("TWO: Sending packet: len={}", buffer.len());
-            one_send.send(buffer.to_vec());
+            one_send.send(buffer.to_vec()).unwrap();
         },
         |_, _, data| {
 
@@ -608,17 +601,17 @@ mod tests {
         for i in 0..TEST_ACKS_NUM_ITERATIONS {
             // forward packets to their endpoints
             match one_recv.try_recv() {
-                Ok(v) => { one.recv(v.as_slice()); },
+                Ok(v) => { one.recv(v.as_slice()).unwrap(); },
                 Err(_) => {}
             }
             match two_recv.try_recv() {
-                Ok(v) => { two.recv(v.as_slice()); },
+                Ok(v) => { two.recv(v.as_slice()).unwrap(); },
                 Err(_) => {}
             }
 
             // Send test packets
-            one.send(&test_data);
-            two.send(&test_data);
+            one.send(&test_data).unwrap();
+            two.send(&test_data).unwrap();
 
             time += delta_time;
             one.update(time);
@@ -767,8 +760,6 @@ mod tests {
     #[test]
     fn rust_impl_endpoint() {
         enable_logging();
-
-
 
         let _endpoint = Endpoint::new(EndpointConfig::new("balls"), 0.0,
                                      |_, _, _| trace!("send"),
