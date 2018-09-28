@@ -204,7 +204,7 @@ impl Default for RecvData {
 
 pub struct Endpoint <S, R>
     where   S: Fn(i32, u16, &[u8]),
-            R: Fn(i32, u16, &mut std::io::Cursor<&[u8]>) -> bool,
+            R: Fn(i32, u16, &[u8]) -> bool,
 {
     time: f64,
     rtt: f32,
@@ -222,13 +222,13 @@ pub struct Endpoint <S, R>
 
 impl<S, R> Endpoint<S, R>
     where   S: Fn(i32, u16, &[u8]),
-            R: Fn(i32, u16, &mut std::io::Cursor<&[u8]>) -> bool,
+            R: Fn(i32, u16, &[u8]) -> bool,
 
 {
     #[cfg_attr(feature="cargo-clippy", allow(needless_pass_by_value))]
     pub fn new(config: EndpointConfig, time: f64, send_function: S, recv_function: R) -> Self {
         trace!("Creating new endpoint named '{}'", config.name);
-        let mut r = Self {
+        Self {
             time,
             rtt: 0.0,
             config: config.clone(),
@@ -239,11 +239,8 @@ impl<S, R> Endpoint<S, R>
             reassembly_buffer: SequenceBuffer::with_capacity(config.fragment_reassembly_buffer_size),
             temp_packet_buffer: Vec::with_capacity(config.max_packet_size),
             send_function,
-            recv_function
-        };
-
-        r.acks.resize(config.ack_buffer_size, 0);
-        r
+            recv_function,
+        }
     }
 
     #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation, cast_sign_loss))]
@@ -277,13 +274,13 @@ impl<S, R> Endpoint<S, R>
 
             (self.send_function)(self.config.index, sequence as u16, &self.temp_packet_buffer);
         } else {
-            trace!("Sending packet {} with fragmentation", sequence);
-
             let remainder = if packet.len() % self.config.fragment_size  > 0 { 1 } else { 0 };
             let num_fragments = (packet.len() / self.config.fragment_size ) + remainder;
 
+            trace!("Sending packet {} with fragmentation, size={}, fragments={}", sequence, packet.len(), num_fragments);
+
             for fragment_id in 0..num_fragments {
-                let fragment = FragmentHeader::new(fragment_id as u8, (num_fragments - 1) as u8, header.clone());
+                let fragment = FragmentHeader::new(fragment_id as u8, num_fragments as u8, header.clone());
                 self.temp_packet_buffer.resize(fragment.size(), 0);
 
                 let mut cursor = std::io::Cursor::new(self.temp_packet_buffer.as_mut_slice());
@@ -291,7 +288,7 @@ impl<S, R> Endpoint<S, R>
 
                 let cur_start = fragment_id * self.config.fragment_size;
                 let mut cur_end = (fragment_id + 1) * self.config.fragment_size;
-                if cur_end + self.config.fragment_size > packet.len() {
+                if cur_end > packet.len() {
                     cur_end = packet.len();
                 }
 
@@ -318,7 +315,7 @@ impl<S, R> Endpoint<S, R>
         let mut packet_reader = std::io::Cursor::new(packet);
         let prefix_byte = packet[0];
 
-        if prefix_byte & 1 != 0 {
+        if prefix_byte & 1 == 0 {
             match PacketHeader::parse(&mut packet_reader) {
                 Ok(header) => {
                     if !self.recv_buffer.check_sequence(header.sequence()) {
@@ -327,7 +324,7 @@ impl<S, R> Endpoint<S, R>
                     }
 
                     trace!("Processing packet...");
-                    if (self.recv_function)(self.config.index, header.sequence(), &mut packet_reader) {
+                    if (self.recv_function)(self.config.index, header.sequence(), &packet[packet_reader.position() as usize..packet.len()]) {
                         trace!("process packet successful");
 
                         self.recv_buffer.insert(RecvData::new(self.time, self.config.packet_header_size + packet.len()), header.sequence())?;
@@ -335,11 +332,11 @@ impl<S, R> Endpoint<S, R>
                         let mut ack_bits = header.ack_bits();
                         for i in 0..32 {
                             if ack_bits & 1 != 0 {
-                                let ack_sequence: u16 = header.ack() - i;
+                                let ack_sequence: u16 = (Wrapping(header.ack()) - Wrapping(i)).0;
 
                                 if let Some(sent_data) = self.sent_buffer.get_mut(ack_sequence) {
                                     if !sent_data.acked && self.acks.len() < self.config.ack_buffer_size {
-                                        trace!("Acked packet: {}", ack_sequence);
+                                        trace!("mark acked packet: {}", ack_sequence);
                                         self.acks.push(ack_sequence);
 
                                         sent_data.acked = true;
@@ -404,9 +401,10 @@ impl<S, R> Endpoint<S, R>
                             return Err(ReliableError::InvalidFragment);
                         }
 
-                        trace!("recieved fragment #{}/{}, sequence={}", header.id(), header.count(), reassembly_data.sequence);
                         reassembly_data.num_fragments_received += 1;
                         reassembly_data.fragments_received[usize::from(header.id())] = true;
+
+                        trace!("{}: recieved fragment #{}/{}, wtf={}", self.config.name, header.id()+1, header.count(), reassembly_data.num_fragments_received );
 
                         let start_position: usize = if header.id() == 0 {
                             5
@@ -451,6 +449,7 @@ impl<S, R> Endpoint<S, R>
     pub fn next_sequence(&self) -> i32 {
         self.sequence
     }
+    pub fn acks(&self ) -> &[u16] { self.acks.as_slice() }
 
 }
 
@@ -471,6 +470,174 @@ mod tests {
 
             Builder::new().filter(None, LevelFilter::Trace).init();
         });
+
+    }
+
+    fn test_compare<T>(one: &[T], two: &[T]) -> bool
+        where T: PartialEq
+    {
+        if one.len() != two.len() {
+            return false;
+        }
+        for i in 0..one.len() {
+            if one[i] != two[i] {
+                return false;
+            }
+        }
+        true
+    }
+
+
+    const TEST_FRAGMENTS_NUM_ITERATIONS: usize = 200;
+    #[test]
+    fn fragments() {
+        enable_logging();
+        use std::sync::mpsc::{Sender, Receiver};
+        let (one_send, one_recv): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = std::sync::mpsc::channel();
+        let (two_send, two_recv): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = std::sync::mpsc::channel();
+
+        let def = EndpointConfig::default();
+
+        let mut time = 100.0;
+        let test_data_remainder = [0x41; 4092];
+        let test_data_align = [0x41; 2048];
+
+        let mut test_data = &test_data_align;
+
+        let mut one = Endpoint::new(EndpointConfig::new("one"), time,
+                                    |_, sequence, buffer| {
+                                        two_send.send(buffer.to_vec());
+                                    },
+                                    |_, _, data| {
+                                        assert!(test_compare(data, test_data));
+
+                                        true
+                                    });
+
+        let mut two = Endpoint::new(EndpointConfig::new("two"), time,
+                                    |_, sequence, buffer| {
+                                        one_send.send(buffer.to_vec());
+                                    },
+                                    |_, _, data| {
+                                        assert!(test_compare(data, test_data));
+
+                                        true
+                                    });
+
+        let delta_time = 0.01;
+        for i in 0..TEST_FRAGMENTS_NUM_ITERATIONS {
+            // forward packets to their endpoints
+            match one_recv.try_recv() {
+                Ok(v) => { one.recv(v.as_slice()); },
+                Err(_) => {}
+            }
+            match two_recv.try_recv() {
+                Ok(v) => { two.recv(v.as_slice()); },
+                Err(_) => {}
+            }
+
+            // Send test packets
+            one.send(test_data);
+            two.send(test_data);
+
+            time += delta_time;
+            one.update(time);
+            two.update(time);
+        }
+
+        let mut test_data = &test_data_remainder;
+
+        let delta_time = 0.01;
+        for i in 0..TEST_FRAGMENTS_NUM_ITERATIONS {
+            // forward packets to their endpoints
+            match one_recv.try_recv() {
+                Ok(v) => { one.recv(v.as_slice()); },
+                Err(_) => {}
+            }
+            match two_recv.try_recv() {
+                Ok(v) => { two.recv(v.as_slice()); },
+                Err(_) => {}
+            }
+
+            // Send test packets
+            one.send(test_data);
+            two.send(test_data);
+
+            time += delta_time;
+            one.update(time);
+            two.update(time);
+        }
+    }
+
+    const TEST_ACKS_NUM_ITERATIONS: usize = 200;
+    #[test]
+    fn acks() {
+        enable_logging();
+        use std::sync::mpsc::{Sender, Receiver};
+        let (one_send, one_recv): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = std::sync::mpsc::channel();
+        let (two_send, two_recv): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = std::sync::mpsc::channel();
+
+        let mut time = 100.0;
+        let test_data = [0x41; 24];
+
+        let mut one = Endpoint::new(EndpointConfig::new("one"), time,
+        |_, sequence, buffer| {
+            trace!("ONE: Sending packet: len={}", buffer.len());
+            two_send.send(buffer.to_vec());
+        },
+        |_, _, data| {
+
+            assert_eq!(&data, &test_data);
+
+            true
+        });
+
+        let mut two = Endpoint::new(EndpointConfig::new("two"), time,
+        |_, sequence, buffer| {
+            trace!("TWO: Sending packet: len={}", buffer.len());
+            one_send.send(buffer.to_vec());
+        },
+        |_, _, data| {
+
+            assert_eq!(&data, &test_data);
+
+            true
+        });
+
+        let delta_time = 0.01;
+        for i in 0..TEST_ACKS_NUM_ITERATIONS {
+            // forward packets to their endpoints
+            match one_recv.try_recv() {
+                Ok(v) => { one.recv(v.as_slice()); },
+                Err(_) => {}
+            }
+            match two_recv.try_recv() {
+                Ok(v) => { two.recv(v.as_slice()); },
+                Err(_) => {}
+            }
+
+            // Send test packets
+            one.send(&test_data);
+            two.send(&test_data);
+
+            time += delta_time;
+            one.update(time);
+            two.update(time);
+        }
+
+        /* TODO: I dont understand what he was checking here?
+        let mut one_acked: [u8; TEST_ACKS_NUM_ITERATIONS] = [0; TEST_ACKS_NUM_ITERATIONS];
+        let mut i = 0;
+        for ack in one.acks() {
+            if *ack < TEST_ACKS_NUM_ITERATIONS as u16 {
+                one_acked[*ack as usize] = 1;
+                trace!("Acked: {}", i);
+            }
+            i += 1;
+        }
+        for i in 0..TEST_ACKS_NUM_ITERATIONS / 2 {
+            assert_eq!(one_acked[i], ((i+1) % 2) as u8);
+        }*/
 
     }
 
@@ -600,6 +767,8 @@ mod tests {
     #[test]
     fn rust_impl_endpoint() {
         enable_logging();
+
+
 
         let _endpoint = Endpoint::new(EndpointConfig::new("balls"), 0.0,
                                      |_, _, _| trace!("send"),

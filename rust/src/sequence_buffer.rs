@@ -139,6 +139,6 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
     #[inline]
     #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation))]
     pub fn check_sequence(&self, sequence: u16) -> bool {
-        ! Self::sequence_greater_than(sequence, self.sequence() - self.len() as u16)
+        Self::sequence_greater_than(sequence, (Wrapping(self.sequence()) - Wrapping(self.len() as u16)).0)
     }
 }

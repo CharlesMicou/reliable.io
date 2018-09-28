@@ -35,7 +35,7 @@ impl HeaderParser for PacketHeader {
     fn size(&self) -> usize {
         let mut size: usize = 3;
 
-        let mut sequence_difference = i32::from(self.sequence - self.ack);
+        let mut sequence_difference = i32::from((Wrapping(self.sequence) - Wrapping(self.ack)).0);
         if sequence_difference < 0 {
             sequence_difference = (Wrapping(sequence_difference) + Wrapping(65536)).0;
         }
@@ -83,7 +83,7 @@ impl HeaderParser for PacketHeader {
             prefix_byte |= 1<<4;
         }
 
-        let mut sequence_difference = i32::from(self.sequence - self.ack);
+        let mut sequence_difference = i32::from((Wrapping(self.sequence) - Wrapping(self.ack)).0);
         if sequence_difference < 0 {
             sequence_difference = (Wrapping(sequence_difference) + Wrapping(65536)).0;
         }
@@ -145,7 +145,7 @@ impl HeaderParser for PacketHeader {
                 return Err(ReliableError::InvalidPacket);
             }
             let sequence_difference = reader.read_u8()?;
-            ack = sequence - u16::from(sequence_difference);
+            ack = (Wrapping(sequence) - Wrapping(u16::from(sequence_difference))).0;
         } else {
             if packet.len() < 5 {
                 error!("Packet too small for packet header (3)");
