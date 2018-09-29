@@ -49,24 +49,24 @@ pub const RELIABLE_FRAGMENT_HEADER_BYTES: usize = 5;
 
 #[derive(Clone)]
 pub struct EndpointConfig {
-    name: String,
-    index: i32,
-    max_packet_size: usize,
-    fragment_above: usize,
-    max_fragments: u32,
-    fragment_size: usize,
-    ack_buffer_size: usize,
-    sent_packets_buffer_size: usize,
-    received_packets_buffer_size: usize,
-    fragment_reassembly_buffer_size: usize,
-    rtt_smoothing_factor: f32,
-    packet_loss_smoothing_factor: f32,
-    bandwidth_smoothing_factor: f32,
-    packet_header_size: usize,
+    pub name: String,
+    pub index: i32,
+    pub max_packet_size: usize,
+    pub fragment_above: usize,
+    pub max_fragments: u32,
+    pub fragment_size: usize,
+    pub ack_buffer_size: usize,
+    pub sent_packets_buffer_size: usize,
+    pub received_packets_buffer_size: usize,
+    pub fragment_reassembly_buffer_size: usize,
+    pub rtt_smoothing_factor: f32,
+    pub packet_loss_smoothing_factor: f32,
+    pub bandwidth_smoothing_factor: f32,
+    pub packet_header_size: usize,
 }
 
 impl EndpointConfig {
-    fn new(name: &str, ) -> Self {
+    pub fn new(name: &str, ) -> Self {
         let mut r = Self::default();
         r.name = name.to_string();
         r
@@ -212,14 +212,14 @@ pub struct Endpoint {
     recv_buffer: SequenceBuffer<RecvData>,
     reassembly_buffer: SequenceBuffer<ReassemblyData>,
     temp_packet_buffer: Vec<u8>,
-    send_function: &'static Fn(i32, u16, &[u8]),
-    recv_function: &'static Fn(i32, u16, &[u8]) -> bool,
+    send_function: &'static dyn Fn(i32, u16, &[u8]),
+    recv_function: &'static dyn Fn(i32, u16, &[u8]) -> bool,
 
 }
 
 impl Endpoint {
     #[cfg_attr(feature="cargo-clippy", allow(needless_pass_by_value))]
-    pub fn new(config: EndpointConfig, time: f64, send_function: &'static Fn(i32, u16, &[u8]), recv_function: &'static Fn(i32, u16, &[u8]) -> bool) -> Self {
+    pub fn new(config: EndpointConfig, time: f64, send_function: &'static dyn Fn(i32, u16, &[u8]), recv_function: &'static dyn Fn(i32, u16, &[u8]) -> bool) -> Self {
         trace!("Creating new endpoint named '{}'", config.name);
         Self {
             time,

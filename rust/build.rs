@@ -18,7 +18,7 @@ fn main() {
     // Build the wrapper bindings librt_transports
     let bindings = bindgen::Builder::default()
         .header("reliable.h")
-        .rustfmt_bindings(true)
+        //.rustfmt_bindings(true)
         .generate()
         .expect("Unable to generate bindings");
 
