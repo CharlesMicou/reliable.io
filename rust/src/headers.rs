@@ -1,13 +1,14 @@
 use crate::ReliableError;
-use std::num::Wrapping;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use log::*;
+use std::num::Wrapping;
 
 pub trait HeaderParser {
     type T;
 
     fn size(&self) -> usize;
-    fn write(&self, writer: &mut std::io::Cursor<&mut [u8]>, ) -> Result<(), ReliableError>;
-    fn parse(reader: &mut std::io::Cursor<&[u8]>, ) -> Result<Self::T, ReliableError>;
+    fn write(&self, writer: &mut std::io::Cursor<&mut [u8]>) -> Result<(), ReliableError>;
+    fn parse(reader: &mut std::io::Cursor<&[u8]>) -> Result<Self::T, ReliableError>;
 }
 
 #[derive(Clone, PartialEq, PartialOrd, Debug, Default)]
@@ -18,15 +19,23 @@ pub struct PacketHeader {
 }
 
 impl PacketHeader {
-    pub fn new(sequence: u16, ack: u16, ack_bits: u32,) -> Self {
+    pub fn new(sequence: u16, ack: u16, ack_bits: u32) -> Self {
         Self {
-            sequence, ack, ack_bits
+            sequence,
+            ack,
+            ack_bits,
         }
     }
 
-    pub fn sequence(&self,) -> u16 { self.sequence }
-    pub fn ack(&self,) -> u16 { self.ack }
-    pub fn ack_bits(&self,) -> u32 { self.ack_bits }
+    pub fn sequence(&self) -> u16 {
+        self.sequence
+    }
+    pub fn ack(&self) -> u16 {
+        self.ack
+    }
+    pub fn ack_bits(&self) -> u32 {
+        self.ack_bits
+    }
 }
 
 impl HeaderParser for PacketHeader {
@@ -46,41 +55,44 @@ impl HeaderParser for PacketHeader {
             size += 2;
         }
 
-        if ( self.ack_bits & 0x0000_00FF ) != 0x0000_00FF {
+        if (self.ack_bits & 0x0000_00FF) != 0x0000_00FF {
             size += 1;
         }
-        if ( self.ack_bits & 0x0000_FF00 ) != 0x0000_FF00 {
+        if (self.ack_bits & 0x0000_FF00) != 0x0000_FF00 {
             size += 1;
         }
 
-        if ( self.ack_bits & 0x00FF_0000 ) != 0x00FF_0000 {
+        if (self.ack_bits & 0x00FF_0000) != 0x00FF_0000 {
             size += 1;
         }
-        if ( self.ack_bits & 0xFF00_0000 ) != 0xFF00_0000 {
+        if (self.ack_bits & 0xFF00_0000) != 0xFF00_0000 {
             size += 1;
         }
 
         size
     }
 
-    #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation, cast_sign_loss, if_not_else))]
-    fn write(&self, writer: &mut std::io::Cursor<&mut [u8]>, ) -> Result<(), ReliableError> {
+    #[cfg_attr(
+        feature = "cargo-clippy",
+        allow(cast_possible_truncation, cast_sign_loss, if_not_else)
+    )]
+    fn write(&self, writer: &mut std::io::Cursor<&mut [u8]>) -> Result<(), ReliableError> {
         let mut prefix_byte = 0;
 
-        if ( self.ack_bits & 0x0000_00FF ) != 0x0000_00FF {
-            prefix_byte |= 1<<1;
+        if (self.ack_bits & 0x0000_00FF) != 0x0000_00FF {
+            prefix_byte |= 1 << 1;
         }
 
-        if ( self.ack_bits & 0x0000_FF00 ) != 0x0000_FF00 {
-            prefix_byte |= 1<<2;
+        if (self.ack_bits & 0x0000_FF00) != 0x0000_FF00 {
+            prefix_byte |= 1 << 2;
         }
 
-        if ( self.ack_bits & 0x00FF_0000 ) != 0x00FF_0000  {
-            prefix_byte |= 1<<3;
+        if (self.ack_bits & 0x00FF_0000) != 0x00FF_0000 {
+            prefix_byte |= 1 << 3;
         }
 
-        if ( self.ack_bits & 0xFF00_0000 ) != 0xFF00_0000 {
-            prefix_byte |= 1<<4;
+        if (self.ack_bits & 0xFF00_0000) != 0xFF00_0000 {
+            prefix_byte |= 1 << 4;
         }
 
         let mut sequence_difference = i32::from((Wrapping(self.sequence) - Wrapping(self.ack)).0);
@@ -89,7 +101,7 @@ impl HeaderParser for PacketHeader {
         }
 
         if sequence_difference <= 255 {
-            prefix_byte |= 1<<5;
+            prefix_byte |= 1 << 5;
         }
 
         writer.write_u8(prefix_byte)?;
@@ -98,30 +110,33 @@ impl HeaderParser for PacketHeader {
         if sequence_difference <= 255 {
             writer.write_u8(sequence_difference as u8)?;
         } else {
-            writer.write_u16::<LittleEndian>( self.ack )?;
+            writer.write_u16::<LittleEndian>(self.ack)?;
         }
 
-        if ( self.ack_bits & 0x0000_00FF ) != 0x0000_00FF {
-            writer.write_u8(  ( self.ack_bits & 0x0000_00FF ) as u8)?;
+        if (self.ack_bits & 0x0000_00FF) != 0x0000_00FF {
+            writer.write_u8((self.ack_bits & 0x0000_00FF) as u8)?;
         }
 
-        if ( self.ack_bits & 0x0000_FF00 ) != 0x0000_FF00 {
-            writer.write_u8(  ( ( self.ack_bits & 0x0000_FF00 ) >> 8 ) as u8)?;
+        if (self.ack_bits & 0x0000_FF00) != 0x0000_FF00 {
+            writer.write_u8(((self.ack_bits & 0x0000_FF00) >> 8) as u8)?;
         }
 
-        if ( self.ack_bits & 0x00FF_0000 ) != 0x00FF_0000 {
-            writer.write_u8(  ( ( self.ack_bits & 0x00FF_0000 ) >> 16 ) as u8)?;
+        if (self.ack_bits & 0x00FF_0000) != 0x00FF_0000 {
+            writer.write_u8(((self.ack_bits & 0x00FF_0000) >> 16) as u8)?;
         }
 
-        if ( self.ack_bits & 0xFF00_0000 ) != 0xFF00_0000 {
-            writer.write_u8(  ( ( self.ack_bits & 0xFF00_0000 ) >> 24 ) as u8)?;
+        if (self.ack_bits & 0xFF00_0000) != 0xFF00_0000 {
+            writer.write_u8(((self.ack_bits & 0xFF00_0000) >> 24) as u8)?;
         }
 
         Ok(())
     }
 
-    #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation, cast_sign_loss, if_not_else))]
-    fn parse(reader: &mut std::io::Cursor<&[u8]>, ) -> Result<Self, ReliableError> {
+    #[cfg_attr(
+        feature = "cargo-clippy",
+        allow(cast_possible_truncation, cast_sign_loss, if_not_else)
+    )]
+    fn parse(reader: &mut std::io::Cursor<&[u8]>) -> Result<Self, ReliableError> {
         let packet = *(reader.get_ref());
 
         if packet.len() < 3 {
@@ -139,7 +154,7 @@ impl HeaderParser for PacketHeader {
         let mut ack_bits: u32 = 0xFFFF_FFFF;
         let sequence = reader.read_u16::<LittleEndian>()?;
 
-        if prefix_byte & (1<<5) != 0 {
+        if prefix_byte & (1 << 5) != 0 {
             if packet.len() < 4 {
                 error!("Packet too small for packet header (2)");
                 return Err(ReliableError::InvalidPacket);
@@ -156,7 +171,7 @@ impl HeaderParser for PacketHeader {
 
         let mut expected_bytes: usize = 0;
         for i in 1..5 {
-            if prefix_byte & (1<<i) != 0 {
+            if prefix_byte & (1 << i) != 0 {
                 expected_bytes += 1;
             }
         }
@@ -165,27 +180,31 @@ impl HeaderParser for PacketHeader {
             return Err(ReliableError::InvalidPacket);
         }
 
-        if prefix_byte & (1<<1) != 0 {
+        if prefix_byte & (1 << 1) != 0 {
             ack_bits &= 0xFFFF_FF00;
             ack_bits |= u32::from(reader.read_u8()?);
         }
 
-        if prefix_byte & (1<<2) != 0 {
+        if prefix_byte & (1 << 2) != 0 {
             ack_bits &= 0xFFFF_00FF;
             ack_bits |= u32::from(reader.read_u8()?) << 8;
         }
 
-        if prefix_byte & (1<<3) != 0 {
+        if prefix_byte & (1 << 3) != 0 {
             ack_bits &= 0xFF00_FFFF;
             ack_bits |= u32::from(reader.read_u8()?) << 16;
         }
 
-        if prefix_byte & (1<<4) != 0 {
+        if prefix_byte & (1 << 4) != 0 {
             ack_bits &= 0x00FF_FFFF;
             ack_bits |= u32::from(reader.read_u8()?) << 24;
         }
 
-        Ok(Self {sequence, ack, ack_bits})
+        Ok(Self {
+            sequence,
+            ack,
+            ack_bits,
+        })
     }
 }
 
@@ -198,18 +217,36 @@ pub struct FragmentHeader {
 }
 
 impl<'a> FragmentHeader {
-    pub fn new(id: u8, num_fragments: u8, packet_header: PacketHeader ) -> Self {
+    pub fn new(id: u8, num_fragments: u8, packet_header: PacketHeader) -> Self {
         let sequence = packet_header.sequence();
-        Self { id, num_fragments, packet_header: Some(packet_header), sequence, }
+        Self {
+            id,
+            num_fragments,
+            packet_header: Some(packet_header),
+            sequence,
+        }
     }
-    pub fn new_fragment(id: u8, num_fragments: u8, sequence: u16 ) -> Self {
-        Self { id, num_fragments, sequence, packet_header: None, }
+    pub fn new_fragment(id: u8, num_fragments: u8, sequence: u16) -> Self {
+        Self {
+            id,
+            num_fragments,
+            sequence,
+            packet_header: None,
+        }
     }
 
-    pub fn sequence(&self,) -> u16 { self.sequence }
-    pub fn id(&self,) -> u8 { self.id }
-    pub fn count(&self,) -> u8 { self.num_fragments }
-    pub fn packet_header(&self, ) -> Option<&PacketHeader> { self.packet_header.as_ref() }
+    pub fn sequence(&self) -> u16 {
+        self.sequence
+    }
+    pub fn id(&self) -> u8 {
+        self.id
+    }
+    pub fn count(&self) -> u8 {
+        self.num_fragments
+    }
+    pub fn packet_header(&self) -> Option<&PacketHeader> {
+        self.packet_header.as_ref()
+    }
 }
 
 impl HeaderParser for FragmentHeader {
@@ -226,7 +263,7 @@ impl HeaderParser for FragmentHeader {
         }
     }
 
-    fn write(&self, writer: &mut std::io::Cursor<&mut [u8]>, ) -> Result<(), ReliableError> {
+    fn write(&self, writer: &mut std::io::Cursor<&mut [u8]>) -> Result<(), ReliableError> {
         writer.write_u8(1)?;
         writer.write_u16::<LittleEndian>(self.sequence)?;
         writer.write_u8(self.id)?;
@@ -243,7 +280,7 @@ impl HeaderParser for FragmentHeader {
         Ok(())
     }
 
-    fn parse(reader: &mut std::io::Cursor<&[u8]>, ) -> Result<Self::T, ReliableError> {
+    fn parse(reader: &mut std::io::Cursor<&[u8]>) -> Result<Self::T, ReliableError> {
         //let packet_header = PacketHeader::default();
 
         let prefix_byte = reader.read_u8()?;
@@ -259,7 +296,7 @@ impl HeaderParser for FragmentHeader {
             sequence,
             id,
             num_fragments,
-            packet_header: None
+            packet_header: None,
         };
 
         if id == 0 {

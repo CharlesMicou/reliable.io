@@ -1,28 +1,31 @@
-#![cfg_attr(feature="cargo-clippy", warn(clippy, clippy_correctness, clippy_style, clippy_pedantic, clippy_perf))]
-#![cfg_attr(feature="cargo-clippy", allow(similar_names))]
+#![cfg_attr(
+    feature = "cargo-clippy",
+    warn(clippy, clippy_correctness, clippy_style, clippy_pedantic, clippy_perf)
+)]
+#![cfg_attr(feature = "cargo-clippy", allow(similar_names))]
 #![feature(nll, stmt_expr_attributes)]
 #![warn(rust_2018_idioms)]
-
 // TODO: remove when done
 #![allow(dead_code, unused_imports)]
 
-#[macro_use] extern crate log;
+use log::*;
 
+#[macro_use]
 use std::num::Wrapping;
 
-pub mod capi;
 pub mod binding_version;
+pub mod capi;
 
 mod sequence_buffer;
-pub use crate::sequence_buffer::SequenceBuffer as SequenceBuffer;
+pub use crate::sequence_buffer::SequenceBuffer;
 
 mod error;
-pub use crate::error::ReliableError as ReliableError;
+pub use crate::error::ReliableError;
 
 mod headers;
-pub use crate::headers::PacketHeader as PacketHeader;
-pub use crate::headers::FragmentHeader as FragmentHeader;
+pub use crate::headers::FragmentHeader;
 pub use crate::headers::HeaderParser as Header;
+pub use crate::headers::PacketHeader;
 
 /* TODO:
 enum Counters {
@@ -46,7 +49,6 @@ enum Counters {
 pub const RELIABLE_MAX_PACKET_HEADER_BYTES: usize = 9;
 pub const RELIABLE_FRAGMENT_HEADER_BYTES: usize = 5;
 
-
 #[derive(Clone)]
 pub struct EndpointConfig {
     pub name: String,
@@ -66,7 +68,7 @@ pub struct EndpointConfig {
 }
 
 impl EndpointConfig {
-    pub fn new(name: &str, ) -> Self {
+    pub fn new(name: &str) -> Self {
         let mut r = Self::default();
         r.name = name.to_string();
         r
@@ -123,7 +125,14 @@ struct ReassemblyData {
 }
 
 impl ReassemblyData {
-    pub fn new(sequence: u16, ack: u16, ack_bits: u32, num_fragments_total: usize, header_size: usize, prealloc: usize,) -> Self {
+    pub fn new(
+        sequence: u16,
+        ack: u16,
+        ack_bits: u32,
+        num_fragments_total: usize,
+        header_size: usize,
+        prealloc: usize,
+    ) -> Self {
         Self {
             sequence,
             ack,
@@ -151,12 +160,11 @@ impl Default for ReassemblyData {
     }
 }
 
-
 #[derive(Debug, Clone)]
 struct SentData {
-    time:  f64,
+    time: f64,
     acked: bool,
-    size:  usize,
+    size: usize,
 }
 
 impl SentData {
@@ -186,19 +194,13 @@ struct RecvData {
 }
 impl RecvData {
     pub fn new(time: f64, size: usize) -> Self {
-        Self {
-            time,
-            size,
-        }
+        Self { time, size }
     }
 }
 
 impl Default for RecvData {
     fn default() -> Self {
-        Self {
-            time: 0.0,
-            size: 0,
-        }
+        Self { time: 0.0, size: 0 }
     }
 }
 
@@ -214,12 +216,16 @@ pub struct Endpoint {
     temp_packet_buffer: Vec<u8>,
     send_function: &'static dyn Fn(i32, u16, &[u8]),
     recv_function: &'static dyn Fn(i32, u16, &[u8]) -> bool,
-
 }
 
 impl Endpoint {
-    #[cfg_attr(feature="cargo-clippy", allow(needless_pass_by_value))]
-    pub fn new(config: EndpointConfig, time: f64, send_function: &'static dyn Fn(i32, u16, &[u8]), recv_function: &'static dyn Fn(i32, u16, &[u8]) -> bool) -> Self {
+    #[cfg_attr(feature = "cargo-clippy", allow(needless_pass_by_value))]
+    pub fn new(
+        config: EndpointConfig,
+        time: f64,
+        send_function: &'static dyn Fn(i32, u16, &[u8]),
+        recv_function: &'static dyn Fn(i32, u16, &[u8]) -> bool,
+    ) -> Self {
         trace!("Creating new endpoint named '{}'", config.name);
         Self {
             time,
@@ -229,17 +235,26 @@ impl Endpoint {
             sequence: 0,
             sent_buffer: SequenceBuffer::with_capacity(config.sent_packets_buffer_size),
             recv_buffer: SequenceBuffer::with_capacity(config.received_packets_buffer_size),
-            reassembly_buffer: SequenceBuffer::with_capacity(config.fragment_reassembly_buffer_size),
+            reassembly_buffer: SequenceBuffer::with_capacity(
+                config.fragment_reassembly_buffer_size,
+            ),
             temp_packet_buffer: Vec::with_capacity(config.max_packet_size),
             send_function,
             recv_function,
         }
     }
 
-    #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation, cast_sign_loss))]
+    #[cfg_attr(
+        feature = "cargo-clippy",
+        allow(cast_possible_truncation, cast_sign_loss)
+    )]
     pub fn send(&mut self, packet: &[u8]) -> Result<usize, ReliableError> {
         if packet.len() > self.config.max_packet_size {
-            error!("Packet too large: Attempting to send {}, max={}", packet.len(), self.config.max_packet_size);
+            error!(
+                "Packet too large: Attempting to send {}, max={}",
+                packet.len(),
+                self.config.max_packet_size
+            );
             return Err(ReliableError::ExceededMaxPacketSize);
         }
 
@@ -267,13 +282,23 @@ impl Endpoint {
 
             (self.send_function)(self.config.index, sequence as u16, &self.temp_packet_buffer);
         } else {
-            let remainder = if packet.len() % self.config.fragment_size  > 0 { 1 } else { 0 };
-            let num_fragments = (packet.len() / self.config.fragment_size ) + remainder;
+            let remainder = if packet.len() % self.config.fragment_size > 0 {
+                1
+            } else {
+                0
+            };
+            let num_fragments = (packet.len() / self.config.fragment_size) + remainder;
 
-            trace!("Sending packet {} with fragmentation, size={}, fragments={}", sequence, packet.len(), num_fragments);
+            trace!(
+                "Sending packet {} with fragmentation, size={}, fragments={}",
+                sequence,
+                packet.len(),
+                num_fragments
+            );
 
             for fragment_id in 0..num_fragments {
-                let fragment = FragmentHeader::new(fragment_id as u8, num_fragments as u8, header.clone());
+                let fragment =
+                    FragmentHeader::new(fragment_id as u8, num_fragments as u8, header.clone());
                 self.temp_packet_buffer.resize(fragment.size(), 0);
 
                 let mut cursor = std::io::Cursor::new(self.temp_packet_buffer.as_mut_slice());
@@ -285,22 +310,28 @@ impl Endpoint {
                     cur_end = packet.len();
                 }
 
-                self.temp_packet_buffer.extend_from_slice(&packet[cur_start..cur_end]);
+                self.temp_packet_buffer
+                    .extend_from_slice(&packet[cur_start..cur_end]);
 
                 (self.send_function)(self.config.index, sequence as u16, &self.temp_packet_buffer);
                 self.temp_packet_buffer.clear();
             }
         }
 
-
-
         Ok(packet.len())
     }
 
-    #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation, cast_sign_loss, if_not_else))]
+    #[cfg_attr(
+        feature = "cargo-clippy",
+        allow(cast_possible_truncation, cast_sign_loss, if_not_else)
+    )]
     pub fn recv(&mut self, packet: &[u8]) -> Result<(), ReliableError> {
         if packet.len() > self.config.max_packet_size {
-            error!("Packet too large: Attempting to recv {}, max={}", packet.len(), self.config.max_packet_size);
+            error!(
+                "Packet too large: Attempting to recv {}, max={}",
+                packet.len(),
+                self.config.max_packet_size
+            );
             return Err(ReliableError::ExceededMaxPacketSize);
         }
 
@@ -317,10 +348,17 @@ impl Endpoint {
                     }
 
                     trace!("Processing packet...");
-                    if (self.recv_function)(self.config.index, header.sequence(), &packet[packet_reader.position() as usize..packet.len()]) {
+                    if (self.recv_function)(
+                        self.config.index,
+                        header.sequence(),
+                        &packet[packet_reader.position() as usize..packet.len()],
+                    ) {
                         trace!("process packet successful");
 
-                        self.recv_buffer.insert(RecvData::new(self.time, self.config.packet_header_size + packet.len()), header.sequence())?;
+                        self.recv_buffer.insert(
+                            RecvData::new(self.time, self.config.packet_header_size + packet.len()),
+                            header.sequence(),
+                        )?;
 
                         let mut ack_bits = header.ack_bits();
                         for i in 0..32 {
@@ -328,16 +366,23 @@ impl Endpoint {
                                 let ack_sequence: u16 = (Wrapping(header.ack()) - Wrapping(i)).0;
 
                                 if let Some(sent_data) = self.sent_buffer.get_mut(ack_sequence) {
-                                    if !sent_data.acked && self.acks.len() < self.config.ack_buffer_size {
+                                    if !sent_data.acked
+                                        && self.acks.len() < self.config.ack_buffer_size
+                                    {
                                         trace!("mark acked packet: {}", ack_sequence);
                                         self.acks.push(ack_sequence);
 
                                         sent_data.acked = true;
-                                        let rtt: f32 = (self.time as f32 - sent_data.time as f32) * 1000.0;
-                                        if (self.rtt == 0.0 && rtt > 0.0) || (self.rtt - rtt).abs() < 0.00001 {
+                                        let rtt: f32 =
+                                            (self.time as f32 - sent_data.time as f32) * 1000.0;
+                                        if (self.rtt == 0.0 && rtt > 0.0)
+                                            || (self.rtt - rtt).abs() < 0.00001
+                                        {
                                             self.rtt = rtt;
                                         } else {
-                                            self.rtt = self.rtt + ((rtt - self.rtt) * self.config.rtt_smoothing_factor);
+                                            self.rtt = self.rtt
+                                                + ((rtt - self.rtt)
+                                                    * self.config.rtt_smoothing_factor);
                                         }
                                     }
                                 }
@@ -348,42 +393,50 @@ impl Endpoint {
                         error!("Process received packet failed");
                     }
 
-
                     return Ok(());
-                },
-                Err(e) => { return Err(e); },
+                }
+                Err(e) => {
+                    return Err(e);
+                }
             }
         } else {
             match FragmentHeader::parse(&mut packet_reader) {
                 Ok(header) => {
-                    trace!("parsed fragment header correctly, processing reassembly..: id={}, s={}", header.sequence(), header.id());
+                    trace!(
+                        "parsed fragment header correctly, processing reassembly..: id={}, s={}",
+                        header.sequence(),
+                        header.id()
+                    );
 
                     {
-                        let reassembly_data = match self.reassembly_buffer.get_mut(header.sequence()) {
-                            Some(reassembly_data) => {
-                                reassembly_data
-                            },
-                            None => {
-                                if header.id() == 0 {
-                                    if header.packet_header().is_none() {
-                                        return Err(ReliableError::InvalidFragment);
+                        let reassembly_data =
+                            match self.reassembly_buffer.get_mut(header.sequence()) {
+                                Some(reassembly_data) => reassembly_data,
+                                None => {
+                                    if header.id() == 0 {
+                                        if header.packet_header().is_none() {
+                                            return Err(ReliableError::InvalidFragment);
+                                        }
+
+                                        let ack = header.packet_header().unwrap().ack();
+                                        let ack_bits = header.packet_header().unwrap().ack_bits();
+                                        let reassembly_data = ReassemblyData::new(
+                                            header.sequence(),
+                                            ack,
+                                            ack_bits,
+                                            usize::from(header.count()),
+                                            header.size(),
+                                            RELIABLE_MAX_PACKET_HEADER_BYTES
+                                                + self.config.fragment_size,
+                                        );
+
+                                        self.reassembly_buffer
+                                            .insert(reassembly_data.clone(), header.sequence())?
+                                    } else {
+                                        panic!("Error!");
                                     }
-
-                                    let ack = header.packet_header().unwrap().ack();
-                                    let ack_bits = header.packet_header().unwrap().ack_bits();
-                                    let reassembly_data = ReassemblyData::new(header.sequence(),
-                                                                              ack,
-                                                                              ack_bits,
-                                                                              usize::from(header.count()),
-                                                                              header.size(),
-                                                                              RELIABLE_MAX_PACKET_HEADER_BYTES + self.config.fragment_size);
-
-                                    self.reassembly_buffer.insert(reassembly_data.clone(), header.sequence())?
-                                } else {
-                                    panic!("Error!");
                                 }
-                            },
-                        };
+                            };
 
                         // Got the data
                         if reassembly_data.num_fragments_total != usize::from(header.count()) {
@@ -397,17 +450,24 @@ impl Endpoint {
                         reassembly_data.num_fragments_received += 1;
                         reassembly_data.fragments_received[usize::from(header.id())] = true;
 
-                        trace!("{}: recieved fragment #{}/{}, wtf={}", self.config.name, header.id()+1, header.count(), reassembly_data.num_fragments_received );
+                        trace!(
+                            "{}: recieved fragment #{}/{}, wtf={}",
+                            self.config.name,
+                            header.id() + 1,
+                            header.count(),
+                            reassembly_data.num_fragments_received
+                        );
 
-                        let start_position: usize = if header.id() == 0 {
-                            5
-                        } else {
-                            header.size()
-                        };
+                        let start_position: usize =
+                            if header.id() == 0 { 5 } else { header.size() };
 
-                        reassembly_data.buffer.extend_from_slice(&packet[start_position..packet.len()]);
+                        reassembly_data
+                            .buffer
+                            .extend_from_slice(&packet[start_position..packet.len()]);
 
-                        if reassembly_data.num_fragments_received == reassembly_data.num_fragments_total {
+                        if reassembly_data.num_fragments_received
+                            == reassembly_data.num_fragments_total
+                        {
                             let sequence = reassembly_data.sequence as u16;
                             let buffer = reassembly_data.buffer.clone(); // TODO: WHY DO I HAVE TO DO THIS CLONE!?!?!
 
@@ -416,8 +476,10 @@ impl Endpoint {
                             self.reassembly_buffer.remove(sequence);
                         }
                     }
-                },
-                Err(e) => { return Err(e); },
+                }
+                Err(e) => {
+                    return Err(e);
+                }
             }
         }
 
@@ -426,8 +488,6 @@ impl Endpoint {
 
     pub fn update(&mut self, time: f64) {
         self.time = time;
-
-
     }
 
     pub fn reset(&mut self) {
@@ -442,14 +502,15 @@ impl Endpoint {
     pub fn next_sequence(&self) -> i32 {
         self.sequence
     }
-    pub fn acks(&self ) -> &[u16] { self.acks.as_slice() }
-
+    pub fn acks(&self) -> &[u16] {
+        self.acks.as_slice()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     const TEST_BUFFER_SIZE: usize = 256;
-    
+
     use super::*;
 
     use std::sync::{Once, ONCE_INIT};
@@ -457,17 +518,17 @@ mod tests {
     static LOGGER_INIT: Once = ONCE_INIT;
 
     fn enable_logging() {
-        LOGGER_INIT.call_once(||{
+        LOGGER_INIT.call_once(|| {
             use env_logger::Builder;
             use log::LevelFilter;
 
             Builder::new().filter(None, LevelFilter::Trace).init();
         });
-
     }
 
     fn test_compare<T>(one: &[T], two: &[T]) -> bool
-        where T: PartialEq
+    where
+        T: PartialEq,
     {
         if one.len() != two.len() {
             return false;
@@ -480,12 +541,11 @@ mod tests {
         true
     }
 
-
     const TEST_FRAGMENTS_NUM_ITERATIONS: usize = 200;
     #[test]
     fn fragments() {
         enable_logging();
-        use std::sync::mpsc::{Sender, Receiver};
+        use std::sync::mpsc::{Receiver, Sender};
         let (one_send, one_recv): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = std::sync::mpsc::channel();
         let (two_send, two_recv): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = std::sync::mpsc::channel();
 
@@ -497,35 +557,45 @@ mod tests {
 
         let mut test_data = &test_data_align;
 
-        let mut one = Endpoint::new(EndpointConfig::new("one"), time,
-                                    |_, sequence, buffer| {
-                                        two_send.send(buffer.to_vec());
-                                    },
-                                    |_, _, data| {
-                                        assert!(test_compare(data, test_data));
+        let mut one = Endpoint::new(
+            EndpointConfig::new("one"),
+            time,
+            |_, sequence, buffer| {
+                two_send.send(buffer.to_vec());
+            },
+            |_, _, data| {
+                assert!(test_compare(data, test_data));
 
-                                        true
-                                    });
+                true
+            },
+        );
 
-        let mut two = Endpoint::new(EndpointConfig::new("two"), time,
-                                    |_, sequence, buffer| {
-                                        one_send.send(buffer.to_vec());
-                                    },
-                                    |_, _, data| {
-                                        assert!(test_compare(data, test_data));
+        let mut two = Endpoint::new(
+            EndpointConfig::new("two"),
+            time,
+            |_, sequence, buffer| {
+                one_send.send(buffer.to_vec());
+            },
+            |_, _, data| {
+                assert!(test_compare(data, test_data));
 
-                                        true
-                                    });
+                true
+            },
+        );
 
         let delta_time = 0.01;
         for i in 0..TEST_FRAGMENTS_NUM_ITERATIONS {
             // forward packets to their endpoints
             match one_recv.try_recv() {
-                Ok(v) => { one.recv(v.as_slice()); },
+                Ok(v) => {
+                    one.recv(v.as_slice());
+                }
                 Err(_) => {}
             }
             match two_recv.try_recv() {
-                Ok(v) => { two.recv(v.as_slice()); },
+                Ok(v) => {
+                    two.recv(v.as_slice());
+                }
                 Err(_) => {}
             }
 
@@ -544,11 +614,15 @@ mod tests {
         for i in 0..TEST_FRAGMENTS_NUM_ITERATIONS {
             // forward packets to their endpoints
             match one_recv.try_recv() {
-                Ok(v) => { one.recv(v.as_slice()).unwrap(); },
+                Ok(v) => {
+                    one.recv(v.as_slice()).unwrap();
+                }
                 Err(_) => {}
             }
             match two_recv.try_recv() {
-                Ok(v) => { two.recv(v.as_slice()).unwrap(); },
+                Ok(v) => {
+                    two.recv(v.as_slice()).unwrap();
+                }
                 Err(_) => {}
             }
 
@@ -566,46 +640,54 @@ mod tests {
     #[test]
     fn acks() {
         enable_logging();
-        use std::sync::mpsc::{Sender, Receiver};
+        use std::sync::mpsc::{Receiver, Sender};
         let (one_send, one_recv): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = std::sync::mpsc::channel();
         let (two_send, two_recv): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = std::sync::mpsc::channel();
 
         let mut time = 100.0;
         let test_data = [0x41; 24];
 
-        let mut one = Endpoint::new(EndpointConfig::new("one"), time,
-        |_, sequence, buffer| {
-            trace!("ONE: Sending packet: len={}", buffer.len());
-            two_send.send(buffer.to_vec()).unwrap();
-        },
-        |_, _, data| {
+        let mut one = Endpoint::new(
+            EndpointConfig::new("one"),
+            time,
+            |_, sequence, buffer| {
+                trace!("ONE: Sending packet: len={}", buffer.len());
+                two_send.send(buffer.to_vec()).unwrap();
+            },
+            |_, _, data| {
+                assert_eq!(&data, &test_data);
 
-            assert_eq!(&data, &test_data);
+                true
+            },
+        );
 
-            true
-        });
+        let mut two = Endpoint::new(
+            EndpointConfig::new("two"),
+            time,
+            |_, sequence, buffer| {
+                trace!("TWO: Sending packet: len={}", buffer.len());
+                one_send.send(buffer.to_vec()).unwrap();
+            },
+            |_, _, data| {
+                assert_eq!(&data, &test_data);
 
-        let mut two = Endpoint::new(EndpointConfig::new("two"), time,
-        |_, sequence, buffer| {
-            trace!("TWO: Sending packet: len={}", buffer.len());
-            one_send.send(buffer.to_vec()).unwrap();
-        },
-        |_, _, data| {
-
-            assert_eq!(&data, &test_data);
-
-            true
-        });
+                true
+            },
+        );
 
         let delta_time = 0.01;
         for i in 0..TEST_ACKS_NUM_ITERATIONS {
             // forward packets to their endpoints
             match one_recv.try_recv() {
-                Ok(v) => { one.recv(v.as_slice()).unwrap(); },
+                Ok(v) => {
+                    one.recv(v.as_slice()).unwrap();
+                }
                 Err(_) => {}
             }
             match two_recv.try_recv() {
-                Ok(v) => { two.recv(v.as_slice()).unwrap(); },
+                Ok(v) => {
+                    two.recv(v.as_slice()).unwrap();
+                }
                 Err(_) => {}
             }
 
@@ -631,7 +713,6 @@ mod tests {
         for i in 0..TEST_ACKS_NUM_ITERATIONS / 2 {
             assert_eq!(one_acked[i], ((i+1) % 2) as u8);
         }*/
-
     }
 
     #[test]
@@ -645,8 +726,10 @@ mod tests {
 
         let mut buffer = SequenceBuffer::<TestData>::with_capacity(TEST_BUFFER_SIZE);
 
-        for i in 0..TEST_BUFFER_SIZE+1 {
-            buffer.insert(TestData{ sequence: i as u16 }, i as u16).unwrap();
+        for i in 0..TEST_BUFFER_SIZE + 1 {
+            buffer
+                .insert(TestData { sequence: i as u16 }, i as u16)
+                .unwrap();
         }
 
         let (ack, ack_bits) = buffer.ack_bits();
@@ -659,13 +742,23 @@ mod tests {
         buffer.reset();
 
         for ack in [1, 5, 9, 11].iter() {
-            buffer.insert(TestData{ sequence: *ack as u16 }, *ack as u16).unwrap();
+            buffer
+                .insert(
+                    TestData {
+                        sequence: *ack as u16,
+                    },
+                    *ack as u16,
+                )
+                .unwrap();
         }
 
         let (ack, ack_bits) = buffer.ack_bits();
 
         assert_eq!(ack, 11);
-        assert_eq!(ack_bits, ( 1 | (1<<(11-9)) | (1<<(11-5)) | (1<<(11-1)) ) );
+        assert_eq!(
+            ack_bits,
+            (1 | (1 << (11 - 9)) | (1 << (11 - 5)) | (1 << (11 - 1)))
+        );
     }
 
     #[test]
@@ -687,35 +780,36 @@ mod tests {
             assert!(r.is_none());
         }
 
-        for i in 0..TEST_BUFFER_SIZE*4 {
-            buffer.insert(TestData{ sequence: i as u16 }, i as u16).unwrap();
+        for i in 0..TEST_BUFFER_SIZE * 4 {
+            buffer
+                .insert(TestData { sequence: i as u16 }, i as u16)
+                .unwrap();
             assert_eq!(buffer.sequence(), i as u16 + 1);
 
             let r = buffer.get(i as u16);
             assert_eq!(r.unwrap().sequence, i as u16);
         }
 
-        for i in 0..TEST_BUFFER_SIZE-1 {
-            let r = buffer.insert(TestData{ sequence: i as u16 }, i as u16);
+        for i in 0..TEST_BUFFER_SIZE - 1 {
+            let r = buffer.insert(TestData { sequence: i as u16 }, i as u16);
             assert!(r.is_err());
         }
 
-        let mut index = TEST_BUFFER_SIZE * 4-1;
-        for _ in 0..TEST_BUFFER_SIZE-1  {
+        let mut index = TEST_BUFFER_SIZE * 4 - 1;
+        for _ in 0..TEST_BUFFER_SIZE - 1 {
             let entry = buffer.get(index as u16);
             assert!(entry.is_some());
             let e = entry.unwrap();
             assert_eq!(e.sequence, index as u16);
             index = index - 1;
         }
-
     }
 
     #[test]
     fn fragment_header() {
         let write_id: u8 = 111;
-        let write_num : u8 = 123;
-        let write_sequence : u16 = 999;
+        let write_num: u8 = 123;
+        let write_sequence: u16 = 999;
 
         let write_fragment = FragmentHeader::new_fragment(write_id, write_num, write_sequence);
 
@@ -731,7 +825,6 @@ mod tests {
         assert_eq!(write_fragment.sequence(), read_fragment.sequence());
         assert_eq!(write_fragment.id(), read_fragment.id());
         assert_eq!(write_fragment.count(), read_fragment.count());
-
     }
 
     #[test]
@@ -761,10 +854,14 @@ mod tests {
     fn rust_impl_endpoint() {
         enable_logging();
 
-        let _endpoint = Endpoint::new(EndpointConfig::new("balls"), 0.0,
-                                     |_, _, _| trace!("send"),
-                                     |_, _, _| { trace!("recv"); true }
+        let _endpoint = Endpoint::new(
+            EndpointConfig::new("balls"),
+            0.0,
+            |_, _, _| trace!("send"),
+            |_, _, _| {
+                trace!("recv");
+                true
+            },
         );
-
     }
 }

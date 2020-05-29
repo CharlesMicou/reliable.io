@@ -1,14 +1,20 @@
 use crate::ReliableError;
 use std::num::Wrapping;
 
-pub struct SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
+pub struct SequenceBuffer<T>
+where
+    T: Default + std::clone::Clone + Send + Sync,
+{
     entries: Vec<T>,
     entry_sequences: Vec<u32>,
     sequence: u16,
     size: usize,
 }
 
-impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
+impl<T> SequenceBuffer<T>
+where
+    T: Default + std::clone::Clone + Send + Sync,
+{
     pub fn with_capacity(size: usize) -> Self {
         let mut entries = Vec::with_capacity(size);
         let mut entry_sequences = Vec::with_capacity(size);
@@ -42,13 +48,15 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
         Some(&mut self.entries[index])
     }
 
-    #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation))]
+    #[cfg_attr(feature = "cargo-clippy", allow(cast_possible_truncation))]
     pub fn insert(&mut self, data: T, sequence: u16) -> Result<&mut T, ReliableError> {
-
-        if Self::sequence_less_than(sequence, (Wrapping(self.sequence) - Wrapping(self.len() as u16)).0 ) {
+        if Self::sequence_less_than(
+            sequence,
+            (Wrapping(self.sequence) - Wrapping(self.len() as u16)).0,
+        ) {
             return Err(ReliableError::SequenceBufferFull);
         }
-        if Self::sequence_greater_than( (Wrapping(sequence) + Wrapping(1)).0, self.sequence ) {
+        if Self::sequence_greater_than((Wrapping(sequence) + Wrapping(1)).0, self.sequence) {
             self.remove_range(self.sequence..sequence);
 
             self.sequence = (Wrapping(sequence) + Wrapping(1)).0;
@@ -67,7 +75,6 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
     // TODO: THIS IS INCLUSIVE END
     pub fn remove_range(&mut self, range: std::ops::Range<u16>) {
         for i in range.clone() {
-
             self.remove(i);
         }
         self.remove(range.end);
@@ -79,7 +86,6 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
         self.entries[index] = T::default();
         self.entry_sequences[index] = 0xFFFF_FFFF;
     }
-
 
     pub fn reset(&mut self) {
         self.sequence = 0;
@@ -96,15 +102,20 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
         self.entries.len()
     }
 
-    pub fn is_empty(&self) -> bool { self.len() > 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len() > 0
+    }
 
     pub fn capacity(&self) -> usize {
         self.entries.capacity()
     }
 
     #[allow(unused)]
-    #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation, cast_sign_loss))]
-    pub fn ack_bits(&self, ) -> (u16, u32) {
+    #[cfg_attr(
+        feature = "cargo-clippy",
+        allow(cast_possible_truncation, cast_sign_loss)
+    )]
+    pub fn ack_bits(&self) -> (u16, u32) {
         let ack = (Wrapping(self.sequence as u16) - Wrapping(1)).0;
         let mut ack_bits: u32 = 0;
         let mut mask: u32 = 1;
@@ -122,14 +133,14 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
     }
 
     #[inline]
-    #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation))]
+    #[cfg_attr(feature = "cargo-clippy", allow(cast_possible_truncation))]
     fn index(&self, sequence: u16) -> usize {
         (sequence % self.entries.len() as u16) as usize
     }
 
     #[inline]
     pub fn sequence_greater_than(s1: u16, s2: u16) -> bool {
-        ( ( s1 > s2 ) && ( s1 - s2 <= 32768 ) ) || ( ( s1 < s2 ) && ( s2 - s1  > 32768 ) )
+        ((s1 > s2) && (s1 - s2 <= 32768)) || ((s1 < s2) && (s2 - s1 > 32768))
     }
     #[inline]
     pub fn sequence_less_than(s1: u16, s2: u16) -> bool {
@@ -137,8 +148,11 @@ impl<T> SequenceBuffer<T> where T: Default + std::clone::Clone + Send + Sync {
     }
 
     #[inline]
-    #[cfg_attr(feature="cargo-clippy", allow(cast_possible_truncation))]
+    #[cfg_attr(feature = "cargo-clippy", allow(cast_possible_truncation))]
     pub fn check_sequence(&self, sequence: u16) -> bool {
-        Self::sequence_greater_than(sequence, (Wrapping(self.sequence()) - Wrapping(self.len() as u16)).0)
+        Self::sequence_greater_than(
+            sequence,
+            (Wrapping(self.sequence()) - Wrapping(self.len() as u16)).0,
+        )
     }
 }

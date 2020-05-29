@@ -1,17 +1,24 @@
-#![cfg_attr(feature="cargo-clippy", allow(clippy, clippy_correctness, clippy_style, clippy_pedantic, clippy_perf))]
+#![cfg_attr(
+    feature = "cargo-clippy",
+    allow(clippy, clippy_correctness, clippy_style, clippy_pedantic, clippy_perf)
+)]
 
+use log::*;
+
+use crate::capi;
 use crate::capi::*;
-use crate::capi as capi;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct EndpointHandle {
-    pointer: * mut reliable_endpoint_t,
+    pointer: *mut reliable_endpoint_t,
 }
 
 impl Default for EndpointHandle {
     fn default() -> Self {
-        Self { pointer: std::ptr::null_mut(), }
+        Self {
+            pointer: std::ptr::null_mut(),
+        }
     }
 }
 
@@ -21,18 +28,22 @@ impl EndpointHandle {
         unsafe {
             pointer = capi::reliable_endpoint_create(config, 100.0);
         }
-        Self {
-            pointer,
-        }
+        Self { pointer }
     }
 
-    pub fn set(&mut self, ptr: * mut reliable_endpoint_t) { self.pointer = ptr; }
-    pub fn ptr(&self) -> * mut reliable_endpoint_t { self.pointer }
-    pub fn ptr_mut(&mut self) -> * mut reliable_endpoint_t { self.pointer }
+    pub fn set(&mut self, ptr: *mut reliable_endpoint_t) {
+        self.pointer = ptr;
+    }
+    pub fn ptr(&self) -> *mut reliable_endpoint_t {
+        self.pointer
+    }
+    pub fn ptr_mut(&mut self) -> *mut reliable_endpoint_t {
+        self.pointer
+    }
 }
 
-impl Into<* mut reliable_endpoint_t> for EndpointHandle {
-    fn into(self) -> * mut reliable_endpoint_t {
+impl Into<*mut reliable_endpoint_t> for EndpointHandle {
+    fn into(self) -> *mut reliable_endpoint_t {
         self.ptr()
     }
 }
@@ -71,9 +82,7 @@ pub trait Endpoint {
     }
 
     fn next_packet_sequence(&self) -> u16 {
-        unsafe {
-            capi::reliable_endpoint_next_packet_sequence(self.handle().ptr())
-        }
+        unsafe { capi::reliable_endpoint_next_packet_sequence(self.handle().ptr()) }
     }
 
     fn get_acks(&self) -> Vec<u16> {
@@ -90,13 +99,21 @@ pub trait Endpoint {
 
     fn send(&mut self, packet: &[u8]) {
         unsafe {
-            capi::reliable_endpoint_send_packet(self.handle().ptr(), packet.as_ptr(), packet.len() as i32);
+            capi::reliable_endpoint_send_packet(
+                self.handle().ptr(),
+                packet.as_ptr(),
+                packet.len() as i32,
+            );
         }
     }
 
     fn recv(&mut self, packet: &[u8]) {
         unsafe {
-            capi::reliable_endpoint_receive_packet(self.handle().ptr(), packet.as_ptr(), packet.len() as i32);
+            capi::reliable_endpoint_receive_packet(
+                self.handle().ptr(),
+                packet.as_ptr(),
+                packet.len() as i32,
+            );
         }
     }
 
@@ -105,33 +122,34 @@ pub trait Endpoint {
     //
 
     fn current_rtt(&self) -> f32 {
-        unsafe {
-            capi::reliable_endpoint_rtt(self.handle().ptr())
-        }
+        unsafe { capi::reliable_endpoint_rtt(self.handle().ptr()) }
     }
     fn current_packet_loss(&self) -> f32 {
-        unsafe {
-            capi::reliable_endpoint_packet_loss(self.handle().ptr())
-        }
+        unsafe { capi::reliable_endpoint_packet_loss(self.handle().ptr()) }
     }
 
     fn bandwidth(&self) -> (f32, f32, f32) {
         let mut res: [f32; 3] = [0.0; 3];
 
         unsafe {
-            capi::reliable_endpoint_bandwidth(self.handle().ptr(), &mut res[0], &mut res[1], &mut res[2])
+            capi::reliable_endpoint_bandwidth(
+                self.handle().ptr(),
+                &mut res[0],
+                &mut res[1],
+                &mut res[2],
+            )
         }
 
         (res[0], res[1], res[2])
     }
 }
 
-
-
 // Exposed function to the user of the bindings
 pub fn create_packet_function<T, P>(config: &mut Config, transmit_packet: T, process_packet: P)
-    where T: Fn(i32, u16, &[u8]),
-          P: Fn(i32, u16, &[u8]) -> i32 {
+where
+    T: Fn(i32, u16, &[u8]),
+    P: Fn(i32, u16, &[u8]) -> i32,
+{
     struct Context<T, P> {
         transmit_packet: T,
         process_packet: P,
@@ -147,29 +165,43 @@ pub fn create_packet_function<T, P>(config: &mut Config, transmit_packet: T, pro
     config.process_packet_function = Some(process_packet_wrapper::<P, T>);
 
     // Shim interface function
-    extern fn transmit_packet_wrapper<T, U>(context : * mut std::os::raw::c_void ,
-                                                  index : std::os::raw::c_int ,
-                                                  sequence : u16 ,
-                                                  buffer : * const u8 ,
-                                                  size : std::os::raw::c_int)
-        where T: Fn(i32, u16, &[u8]) {
+    extern "C" fn transmit_packet_wrapper<T, U>(
+        context: *mut std::os::raw::c_void,
+        index: std::os::raw::c_int,
+        sequence: u16,
+        buffer: *const u8,
+        size: std::os::raw::c_int,
+    ) where
+        T: Fn(i32, u16, &[u8]),
+    {
         unsafe {
-            let opt_context = Box::from_raw( context as *mut Context<T, U>);
+            let opt_context = Box::from_raw(context as *mut Context<T, U>);
 
-            (opt_context.transmit_packet)(index as i32, sequence, std::slice::from_raw_parts(buffer, size as usize));
+            (opt_context.transmit_packet)(
+                index as i32,
+                sequence,
+                std::slice::from_raw_parts(buffer, size as usize),
+            );
         }
-
     }
 
-    extern fn process_packet_wrapper<P, U>(context : * mut std::os::raw::c_void ,
-                                         index : std::os::raw::c_int ,
-                                         sequence : u16 ,
-                                         buffer : * const u8 ,
-                                         size : std::os::raw::c_int) -> i32
-        where P: Fn(i32, u16, &[u8]) -> i32 {
+    extern "C" fn process_packet_wrapper<P, U>(
+        context: *mut std::os::raw::c_void,
+        index: std::os::raw::c_int,
+        sequence: u16,
+        buffer: *const u8,
+        size: std::os::raw::c_int,
+    ) -> i32
+    where
+        P: Fn(i32, u16, &[u8]) -> i32,
+    {
         unsafe {
-            let opt_context = Box::from_raw( context as *mut Context<U, P>);
-            (opt_context.process_packet)(index, sequence, std::slice::from_raw_parts(buffer, size as usize))
+            let opt_context = Box::from_raw(context as *mut Context<U, P>);
+            (opt_context.process_packet)(
+                index,
+                sequence,
+                std::slice::from_raw_parts(buffer, size as usize),
+            )
         }
     }
 }
@@ -187,10 +219,10 @@ pub struct SimpleEndpoint<'a> {
 
 impl<'a> SimpleEndpoint<'a> {
     pub fn new(mut config: Config, handler: &'a dyn EndpointHandler) -> Self {
-
-        create_packet_function(&mut config,
-                               |a, b, c| handler.on_transmit_packet(a, b, c),
-                               |a, b, c| handler.on_process_packet(a, b, c),
+        create_packet_function(
+            &mut config,
+            |a, b, c| handler.on_transmit_packet(a, b, c),
+            |a, b, c| handler.on_process_packet(a, b, c),
         );
 
         Self {
@@ -200,14 +232,12 @@ impl<'a> SimpleEndpoint<'a> {
         }
     }
 
-    pub fn new_closure<T, P>(mut config: Config,  transmit_packet: T, process_packet: P) -> Self
-        where T: Fn(i32, u16, &[u8]),
-              P: Fn(i32, u16, &[u8]) -> i32
+    pub fn new_closure<T, P>(mut config: Config, transmit_packet: T, process_packet: P) -> Self
+    where
+        T: Fn(i32, u16, &[u8]),
+        P: Fn(i32, u16, &[u8]) -> i32,
     {
-        create_packet_function(&mut config,
-                               transmit_packet,
-                               process_packet,
-        );
+        create_packet_function(&mut config, transmit_packet, process_packet);
 
         Self {
             config,
@@ -218,7 +248,9 @@ impl<'a> SimpleEndpoint<'a> {
 }
 
 impl<'a> Endpoint for SimpleEndpoint<'a> {
-    fn handle(&self) -> Arc<EndpointHandle> { self.handle.clone() }
+    fn handle(&self) -> Arc<EndpointHandle> {
+        self.handle.clone()
+    }
 }
 
 pub struct Reliable;
@@ -231,12 +263,22 @@ impl Reliable {
         Self {}
     }
 
-    pub fn create_endpoint<'a>(&self, config: Config, handler: &'a dyn EndpointHandler, ) -> SimpleEndpoint<'a> {
+    pub fn create_endpoint<'a>(
+        &self,
+        config: Config,
+        handler: &'a dyn EndpointHandler,
+    ) -> SimpleEndpoint<'a> {
         SimpleEndpoint::new(config, handler)
     }
-    pub fn create_endpoint_closure<'a, T, P>(&self, config: Config, transmit_packet: T, process_packet: P) -> SimpleEndpoint<'a>
-        where T: Fn(i32, u16, &[u8]),
-              P: Fn(i32, u16, &[u8]) -> i32
+    pub fn create_endpoint_closure<'a, T, P>(
+        &self,
+        config: Config,
+        transmit_packet: T,
+        process_packet: P,
+    ) -> SimpleEndpoint<'a>
+    where
+        T: Fn(i32, u16, &[u8]),
+        P: Fn(i32, u16, &[u8]) -> i32,
     {
         SimpleEndpoint::new_closure(config, transmit_packet, process_packet)
     }
@@ -271,7 +313,12 @@ mod tests {
     struct TestHandler;
     impl EndpointHandler for TestHandler {
         fn on_transmit_packet(&self, index: i32, sequence: u16, data: &[u8]) {
-            trace!("on_transmit_packet: {}. {}. {}", index, sequence, data.len());
+            trace!(
+                "on_transmit_packet: {}. {}. {}",
+                index,
+                sequence,
+                data.len()
+            );
         }
 
         fn on_process_packet(&self, index: i32, sequence: u16, data: &[u8]) -> i32 {
@@ -282,7 +329,6 @@ mod tests {
     }
 
     fn enable_logging() {
-        use env_logger::Builder;
         use log::LevelFilter;
 
         //Builder::new().filter(None, LevelFilter::Trace).init();
@@ -298,14 +344,18 @@ mod tests {
 
         let reliable = Reliable::new();
 
-        let handler = TestHandler{};
-        let mut endpoint_1 = reliable.create_endpoint( Config::default(), &handler );
-        let mut endpoint_2 = reliable.create_endpoint_closure( Config::default(),
-                                                               |_, _, _| trace!("enter"),
-                                                             |_, _, _| {trace!("enter"); 1}, );
+        let handler = TestHandler {};
+        let mut endpoint_1 = reliable.create_endpoint(Config::default(), &handler);
+        let mut endpoint_2 = reliable.create_endpoint_closure(
+            Config::default(),
+            |_, _, _| trace!("enter"),
+            |_, _, _| {
+                trace!("enter");
+                1
+            },
+        );
 
         endpoint_1.update(10.0);
         endpoint_2.update(10.0);
     }
-
 }

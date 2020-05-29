@@ -1,13 +1,9 @@
-extern crate gcc;
-extern crate bindgen;
-
 use std::env;
 use std::path::PathBuf;
 
 fn main() {
-
     // Compile the library
-    gcc::Build::new()
+    cc::Build::new()
         .file("reliable.c")
         .define("RELIABLE_ENABLE_TESTS", Some("0"))
         .define("NDEBUG", Some("0"))
