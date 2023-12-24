@@ -1,5 +1,3 @@
-cargo-features = ["edition"]
-
 [package]
 name = "reliable"
 version = "0.0.1"
@@ -8,8 +6,7 @@ build = "rust/build.rs"
 links = "libreliable"
 keywords = ["reliable"]
 license = "BSD-3-Clause"
-repository = "https://github.com/vvanders/netcode-rust"
-documentation = "https://docs.rs/netcode"
+repository = "https://github.com/jaynus/reliable.io"
 description = "Wrapper for reliable.io library"
 edition = "2018"
 
@@ -23,9 +20,7 @@ env_logger = "0.7"
 
 [build-dependencies]
 cc = "1.0"
-bindgen = "0.54"
-
-
+bindgen = "0.62.0"
 
 [lib]
 path = "rust/src/lib.rs"
