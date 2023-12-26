@@ -1,6 +1,6 @@
 #![cfg_attr(
-    feature = "cargo-clippy",
-    warn(clippy, clippy_correctness, clippy_style, clippy_pedantic, clippy_perf)
+feature = "cargo-clippy",
+warn(clippy, clippy_correctness, clippy_style, clippy_pedantic, clippy_perf)
 )]
 #![cfg_attr(feature = "cargo-clippy", allow(similar_names))]
 #![warn(rust_2018_idioms)]
@@ -16,12 +16,15 @@ pub mod binding_version;
 pub mod capi;
 
 mod sequence_buffer;
+
 pub use crate::sequence_buffer::SequenceBuffer;
 
 mod error;
+
 pub use crate::error::ReliableError;
 
 mod headers;
+
 pub use crate::headers::FragmentHeader;
 pub use crate::headers::HeaderParser as Header;
 pub use crate::headers::PacketHeader;
@@ -144,6 +147,7 @@ impl ReassemblyData {
         }
     }
 }
+
 impl Default for ReassemblyData {
     fn default() -> Self {
         Self {
@@ -191,6 +195,7 @@ struct RecvData {
     time: f64,
     size: usize,
 }
+
 impl RecvData {
     pub fn new(time: f64, size: usize) -> Self {
         Self { time, size }
@@ -213,17 +218,13 @@ pub struct Endpoint {
     recv_buffer: SequenceBuffer<RecvData>,
     reassembly_buffer: SequenceBuffer<ReassemblyData>,
     temp_packet_buffer: Vec<u8>,
-    send_function: &'static dyn Fn(i32, u16, &[u8]),
-    recv_function: &'static dyn Fn(i32, u16, &[u8]) -> bool,
 }
 
 impl Endpoint {
     #[cfg_attr(feature = "cargo-clippy", allow(needless_pass_by_value))]
     pub fn new(
         config: EndpointConfig,
-        time: f64,
-        send_function: &'static dyn Fn(i32, u16, &[u8]),
-        recv_function: &'static dyn Fn(i32, u16, &[u8]) -> bool,
+        time: f64
     ) -> Self {
         trace!("Creating new endpoint named '{}'", config.name);
         Self {
@@ -238,16 +239,15 @@ impl Endpoint {
                 config.fragment_reassembly_buffer_size,
             ),
             temp_packet_buffer: Vec::with_capacity(config.max_packet_size),
-            send_function,
-            recv_function,
         }
     }
 
     #[cfg_attr(
-        feature = "cargo-clippy",
-        allow(cast_possible_truncation, cast_sign_loss)
+    feature = "cargo-clippy",
+    allow(cast_possible_truncation, cast_sign_loss)
     )]
-    pub fn send(&mut self, packet: &[u8]) -> Result<usize, ReliableError> {
+    pub fn send(&mut self, packet: &[u8]) -> Result<Vec<Vec<u8>>, ReliableError> {
+        let mut out: Vec<Vec<u8>> = vec![];
         if packet.len() > self.config.max_packet_size {
             error!(
                 "Packet too large: Attempting to send {}, max={}",
@@ -279,7 +279,7 @@ impl Endpoint {
             header.write(&mut cursor)?;
             self.temp_packet_buffer.extend_from_slice(packet);
 
-            (self.send_function)(self.config.index, sequence as u16, &self.temp_packet_buffer);
+            out.push(self.temp_packet_buffer.clone())
         } else {
             let remainder = if packet.len() % self.config.fragment_size > 0 {
                 1
@@ -312,19 +312,20 @@ impl Endpoint {
                 self.temp_packet_buffer
                     .extend_from_slice(&packet[cur_start..cur_end]);
 
-                (self.send_function)(self.config.index, sequence as u16, &self.temp_packet_buffer);
+                out.push(self.temp_packet_buffer.clone());
                 self.temp_packet_buffer.clear();
             }
         }
 
-        Ok(packet.len())
+        Ok(out)
     }
 
     #[cfg_attr(
-        feature = "cargo-clippy",
-        allow(cast_possible_truncation, cast_sign_loss, if_not_else)
+    feature = "cargo-clippy",
+    allow(cast_possible_truncation, cast_sign_loss, if_not_else)
     )]
-    pub fn recv(&mut self, packet: &[u8]) -> Result<(), ReliableError> {
+    pub fn recv(&mut self, packet: &[u8]) -> Result<Vec<Vec<u8>>, ReliableError> {
+        let mut out: Vec<Vec<u8>> = vec![];
         if packet.len() > self.config.max_packet_size {
             error!(
                 "Packet too large: Attempting to recv {}, max={}",
@@ -334,7 +335,6 @@ impl Endpoint {
             return Err(ReliableError::ExceededMaxPacketSize);
         }
 
-        let mut ret = Ok(());
         let mut packet_reader = std::io::Cursor::new(packet);
         let prefix_byte = packet[0];
 
@@ -346,53 +346,46 @@ impl Endpoint {
                         return Err(ReliableError::StalePacket);
                     }
 
-                    trace!("Processing packet...");
-                    if (self.recv_function)(
-                        self.config.index,
+
+                    out.push(packet[packet_reader.position() as usize..packet.len()].to_vec());
+
+                    self.recv_buffer.insert(
+                        RecvData::new(self.time, self.config.packet_header_size + packet.len()),
                         header.sequence(),
-                        &packet[packet_reader.position() as usize..packet.len()],
-                    ) {
-                        trace!("process packet successful");
+                    )?;
 
-                        self.recv_buffer.insert(
-                            RecvData::new(self.time, self.config.packet_header_size + packet.len()),
-                            header.sequence(),
-                        )?;
+                    let mut ack_bits = header.ack_bits();
+                    for i in 0..32 {
+                        if ack_bits & 1 != 0 {
+                            let ack_sequence: u16 = (Wrapping(header.ack()) - Wrapping(i)).0;
 
-                        let mut ack_bits = header.ack_bits();
-                        for i in 0..32 {
-                            if ack_bits & 1 != 0 {
-                                let ack_sequence: u16 = (Wrapping(header.ack()) - Wrapping(i)).0;
+                            if let Some(sent_data) = self.sent_buffer.get_mut(ack_sequence) {
+                                if !sent_data.acked
+                                    && self.acks.len() < self.config.ack_buffer_size
+                                {
+                                    trace!("mark acked packet: {}", ack_sequence);
+                                    self.acks.push(ack_sequence);
 
-                                if let Some(sent_data) = self.sent_buffer.get_mut(ack_sequence) {
-                                    if !sent_data.acked
-                                        && self.acks.len() < self.config.ack_buffer_size
+                                    sent_data.acked = true;
+                                    let rtt: f32 =
+                                        (self.time as f32 - sent_data.time as f32) * 1000.0;
+                                    if (self.rtt == 0.0 && rtt > 0.0)
+                                        || (self.rtt - rtt).abs() < 0.00001
                                     {
-                                        trace!("mark acked packet: {}", ack_sequence);
-                                        self.acks.push(ack_sequence);
-
-                                        sent_data.acked = true;
-                                        let rtt: f32 =
-                                            (self.time as f32 - sent_data.time as f32) * 1000.0;
-                                        if (self.rtt == 0.0 && rtt > 0.0)
-                                            || (self.rtt - rtt).abs() < 0.00001
-                                        {
-                                            self.rtt = rtt;
-                                        } else {
-                                            self.rtt = self.rtt
-                                                + ((rtt - self.rtt)
-                                                    * self.config.rtt_smoothing_factor);
-                                        }
+                                        self.rtt = rtt;
+                                    } else {
+                                        self.rtt = self.rtt
+                                            + ((rtt - self.rtt)
+                                            * self.config.rtt_smoothing_factor);
                                     }
                                 }
                             }
-                            ack_bits >>= 1;
                         }
-                    } else {
-                        error!("Process received packet failed");
+                        ack_bits >>= 1;
                     }
 
-                    return Ok(());
+
+                    return Ok(out);
                 }
                 Err(e) => {
                     return Err(e);
@@ -470,7 +463,8 @@ impl Endpoint {
                             let sequence = reassembly_data.sequence as u16;
                             let buffer = reassembly_data.buffer.clone(); // TODO: WHY DO I HAVE TO DO THIS CLONE!?!?!
 
-                            ret = self.recv(buffer.as_slice());
+                            let extra_out = self.recv(buffer.as_slice())?; // oh there's internal nesting...
+                            out.extend(extra_out);
 
                             self.reassembly_buffer.remove(sequence);
                         }
@@ -482,7 +476,7 @@ impl Endpoint {
             }
         }
 
-        ret
+        return Ok(out);
     }
 
     pub fn update(&mut self, time: f64) {
@@ -526,8 +520,8 @@ mod tests {
     }
 
     fn test_compare<T>(one: &[T], two: &[T]) -> bool
-    where
-        T: PartialEq,
+        where
+            T: PartialEq,
     {
         if one.len() != two.len() {
             return false;
@@ -541,6 +535,7 @@ mod tests {
     }
 
     const TEST_FRAGMENTS_NUM_ITERATIONS: usize = 200;
+
     #[test]
     fn fragments() {
         enable_logging();
@@ -636,6 +631,7 @@ mod tests {
     }
 
     const TEST_ACKS_NUM_ITERATIONS: usize = 200;
+
     #[test]
     fn acks() {
         enable_logging();
